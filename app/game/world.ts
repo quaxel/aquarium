@@ -124,6 +124,7 @@ const FRENZY_AT = 90;
  * never leaves it — which turns the game's biggest moment into its baseline.
  */
 const FRENZY_COOLDOWN = 25;
+const CURSOR_MAGNET_SPEED = 7;
 
 export function comboMultiplier(combo: number): number {
   let mul = 1;
@@ -1024,7 +1025,7 @@ export class World {
         const dx = this.pointerX - p.x, dy = this.pointerY - p.y;
         const distance = Math.hypot(dx, dy);
         if (distance < d.magnetRadius) {
-          const pull = (1 - distance / d.magnetRadius) * 14 * dt;
+          const pull = (1 - distance / d.magnetRadius) * CURSOR_MAGNET_SPEED * dt;
           p.x += dx * pull;
           p.y += dy * pull;
           if (distance < 0.3) { this.collect(p, 1 + d.freshBonus * 0.5, true); continue; }
@@ -1181,7 +1182,9 @@ export class World {
 
   pushPopup(x: number, y: number, text: string, color: string, big: boolean) {
     if (this.popups.length > 26) this.popups.shift();
-    this.popups.push({ x, y, text, color, life: big ? 1.6 : 1.05, big });
+    const baseLife = big ? 1.6 : 1.05;
+    const life = text.startsWith("+") ? baseLife * 0.5 : baseLife;
+    this.popups.push({ x, y, text, color, life, big });
   }
 }
 

@@ -35,7 +35,7 @@ export function tankBar(index: number): number {
  * See assets/BACKGROUND-PROMPTS.md for the prompts and the composition rules.
  */
 const PAINTED_BACKDROPS: Record<number, string> = {
-  0: "/assets/tank-0-bowl.png",
+  0: "/assets/tank-0-bowl-room-clean-v3.png",
   1: "/assets/tank-1-desk.png",
   2: "/assets/tank-2-tropical.png",
   3: "/assets/tank-3-restaurant.png",

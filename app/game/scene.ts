@@ -12,6 +12,7 @@ import type { DecorId, SpeciesId } from "./types";
 
 const MID_SIZE = { w: 1536, h: 1024 };
 const FISH_ATLAS = { w: 704, h: 480, cellW: 176, cellH: 120, cols: 4 };
+const PLANT_ATLAS = { cols: 3, rows: 2 };
 
 const DECOR_REGIONS: Record<DecorId, { x: number; y: number; w: number; h: number }> = {
   anemone: { x: 520, y: 525, w: 430, h: 390 },
@@ -37,19 +38,41 @@ const fishVertex = `
   uniform float uPhase;
   uniform float uBeat;
   uniform float uEffort;
+  uniform float uTurn;
   uniform vec2 uOffset;
   uniform vec2 uRepeat;
   varying vec2 vUv;
+  varying vec2 vLocalUv;
   void main() {
+    vLocalUv = uv;
     vUv = uOffset + uv * uRepeat;
     vec3 p = position;
     // Undulation travels head to tail and grows toward it, so the body throws the
-    // tail rather than the whole sprite wobbling.
+    // tail rather than the whole sprite wobbling. The motion is authored as a
+    // handful of pixel-art poses, then blended between adjacent poses so it keeps
+    // its stepped character without visibly stuttering.
     float along = 1.0 - uv.x;
-    float wave = sin(uBeat - along * 3.6);
+    const float POSE_RATE = 7.0;
+    float pose = floor(uBeat * POSE_RATE) / POSE_RATE;
+    float poseNext = pose + 1.0 / POSE_RATE;
+    float poseBlend = smoothstep(0.12, 0.88, fract(uBeat * POSE_RATE));
+    float waveA = sin(pose - along * 3.6);
+    float waveB = sin(poseNext - along * 3.6);
+    float wave = mix(waveA, waveB, poseBlend);
     p.y += wave * pow(along, 1.7) * 0.115 * uEffort;
-    p.x += cos(uBeat) * 0.016 * uEffort;
-    p.y += sin(uTime * 1.6 + uPhase) * 0.012;
+    float bodyPulseA = cos(pose) * 0.016 * uEffort;
+    float bodyPulseB = cos(poseNext) * 0.016 * uEffort;
+    p.x += mix(bodyPulseA, bodyPulseB, poseBlend);
+    float bobPose = floor((uTime * 1.6 + uPhase) * 6.0) / 6.0;
+    float bobNext = bobPose + 1.0 / 6.0;
+    float bobBlend = smoothstep(0.15, 0.85, fract((uTime * 1.6 + uPhase) * 6.0));
+    p.y += mix(sin(bobPose), sin(bobNext), bobBlend) * 0.012;
+    // Quick volume fake: bow the sprite around its centre as the fish turns,
+    // giving the flat pixel plane a little depth without replacing the atlas.
+    float across = uv.x * 2.0 - 1.0;
+    float belly = 1.0 - across * across;
+    p.z += belly * uTurn * 0.14;
+    p.x += across * abs(uTurn) * 0.018;
     gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
   }
 `;
@@ -59,11 +82,50 @@ const fishFragment = `
   uniform float uFar;
   uniform float uFlash;
   uniform float uDirt;
+  uniform float uGoldfish;
+  uniform float uBlink;
+  uniform vec2 uOffset;
+  uniform vec2 uRepeat;
   uniform vec3 uWater;
   uniform vec3 uTint;
   varying vec2 vUv;
+  varying vec2 vLocalUv;
   void main() {
-    vec4 c = texture2D(uMap, vUv);
+    vec2 sampleUv = vUv;
+    if (uGoldfish > .5) {
+      // Re-sample the detailed source as an 88x60 sprite. This is an exact 2:1
+      // reduction of the atlas cell, so every logical texel stays a crisp,
+      // evenly-spaced colour block when the fish grows or turns.
+      vec2 pixelUv = (floor(vLocalUv * vec2(88.0, 60.0)) + .5) / vec2(88.0, 60.0);
+      sampleUv = uOffset + pixelUv * uRepeat;
+    }
+    vec4 c = texture2D(uMap, sampleUv);
+
+    if (uGoldfish > .5) {
+      vec2 px = floor(vLocalUv * vec2(88.0, 60.0)) + .5;
+      vec3 orangeDark = vec3(.48, .16, .025);
+
+      // The atlas has one pose, so the face is animated as a few deliberate
+      // palette swaps on that same low-resolution grid.
+      if (uBlink > .01) {
+        vec2 eye = (px - vec2(63.5, 26.5)) / vec2(7.7, 7.7);
+        float eyeShape = dot(eye, eye);
+        float openHalf = mix(1.0, .04, uBlink);
+        if (eyeShape < 1.0 && abs(eye.y) > openHalf) {
+          // Upper and lower lids move toward one another. A small vertical
+          // palette shift keeps the closed eye part of the shaded face instead
+          // of looking like a flat orange patch pasted over it.
+          float shade = clamp((eye.y + 1.0) * .5, 0.0, 1.0);
+          vec3 lid = mix(vec3(1.0, .55, .08), vec3(.88, .25, .025), shade);
+          c = vec4(lid, 1.0);
+        }
+        if (uBlink > .9 && eyeShape < 1.0 && abs(eye.y) < .13) {
+          float curve = abs(eye.x) * .11;
+          if (abs(eye.y + curve) < .105) c = vec4(orangeDark, 1.0);
+        }
+      }
+
+    }
     if (c.a < 0.06) discard;
     c.rgb *= uTint;
     // Water haze, held off until the fish is genuinely deep in the tank.
@@ -214,13 +276,68 @@ const propVertex = `
 
 const propFragment = `
   uniform sampler2D uMap;
+  uniform float uBrightness;
   varying vec2 vUv;
   varying vec3 vColor;
   varying float vAlpha;
   void main() {
     vec4 c = texture2D(uMap, vUv);
     if (c.a < 0.04) discard;
-    gl_FragColor = vec4(c.rgb * vColor, c.a * vAlpha);
+    gl_FragColor = vec4(c.rgb * vColor * uBrightness, c.a * vAlpha);
+  }
+`;
+
+const plantVertex = `
+  uniform float uTime;
+  uniform float uPhase;
+  uniform float uSpeed;
+  uniform float uSway;
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    vec3 p = position;
+    float tip = uv.y * uv.y;
+    float current = sin(uTime * uSpeed + uPhase + uv.y * 1.35);
+    float counter = sin(uTime * uSpeed * .57 + uPhase * 1.7) * .3;
+    p.x += (current + counter) * tip * uSway;
+    p.y += sin(uTime * uSpeed * .72 + uPhase) * tip * .018;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+  }
+`;
+
+const plantFragment = `
+  uniform sampler2D uMap;
+  uniform vec2 uOffset;
+  uniform vec2 uRepeat;
+  uniform vec3 uTint;
+  uniform vec3 uWater;
+  uniform float uHue;
+  uniform float uDirt;
+  varying vec2 vUv;
+
+  vec3 rotateHue(vec3 color, float angle) {
+    float c = cos(angle);
+    float s = sin(angle);
+    mat3 hue = mat3(
+      0.213 + c * 0.787 - s * 0.213, 0.213 - c * 0.213 + s * 0.143, 0.213 - c * 0.213 - s * 0.787,
+      0.715 - c * 0.715 - s * 0.715, 0.715 + c * 0.285 + s * 0.140, 0.715 - c * 0.715 + s * 0.715,
+      0.072 - c * 0.072 + s * 0.928, 0.072 - c * 0.072 - s * 0.283, 0.072 + c * 0.928 + s * 0.072
+    );
+    return hue * color;
+  }
+
+  void main() {
+    vec4 c = texture2D(uMap, uOffset + vUv * uRepeat);
+    if (c.a < .08) discard;
+    // The generated sprites already carry deep teal shadows. Lift the whole layer
+    // so those shaded pixels stay readable after compositing through the water.
+    vec3 plantColor = rotateHue(c.rgb * uTint, uHue);
+    float luminance = dot(plantColor, vec3(.299, .587, .114));
+    plantColor = mix(plantColor, vec3(luminance), .3);
+    plantColor = mix(plantColor, uWater, .26);
+    c.rgb = min(plantColor * 1.08 + vec3(.018, .035, .014), vec3(1.0));
+    c.rgb = mix(c.rgb, c.rgb * vec3(.68, .82, .55), uDirt * .45);
+    gl_FragColor = c;
   }
 `;
 
@@ -266,9 +383,13 @@ function atlasSprite(
       uniform vec3 uWater; uniform float uDirt;
       varying vec2 vUv; varying vec2 vWorld;
       float caustic(vec2 p,float t){
+        // Lock the projected light to chunky world-space texels. The caustic then
+        // crawls across a sprite as pixel clusters instead of a smooth gradient.
+        p=(floor(p*10.)+.5)/10.;
         float a=sin(p.x*2.1+t*1.18+sin(p.y*1.7-t*.72));
         float b=sin(p.y*2.45-t*.96+sin(p.x*1.45+t*.51));
-        return pow(1.-clamp(abs(a+b)*.5,0.,1.),5.2);
+        float light=pow(1.-clamp(abs(a+b)*.5,0.,1.),5.2);
+        return floor(light*4.+.5)/4.;
       }
       void main(){
         vec4 c=texture2D(uMap,vUv);
@@ -281,9 +402,15 @@ function atlasSprite(
         c.rgb = mix(c.rgb, vec3(grey), far * .12);
         c.rgb = mix(c.rgb, uWater, far * .26 + sunk * far * .06);
         c.rgb *= mix(.91, 1.03, uNear) * (1.0 - sunk * .05);
-        float light=(caustic(vWorld*vec2(2.35,2.05),uTime)*.72
-                    +caustic(vWorld.yx*vec2(2.7,2.2)+.37,-uTime*.71)*.38)
-                   *mix(.55,1.0,uNear);
+        vec2 p=vWorld*vec2(2.35,2.05);
+        vec2 split=vec2(.075,.025);
+        float lightR=(caustic(p+split,uTime)*.72
+                     +caustic(vWorld.yx*vec2(2.7,2.2)+.37+split,-uTime*.71)*.38);
+        float lightG=(caustic(p,uTime)*.72
+                     +caustic(vWorld.yx*vec2(2.7,2.2)+.37,-uTime*.71)*.38);
+        float lightB=(caustic(p-split,uTime)*.72
+                     +caustic(vWorld.yx*vec2(2.7,2.2)+.37-split,-uTime*.71)*.38);
+        vec3 light=vec3(lightR,lightG,lightB)*mix(.55,1.0,uNear);
         c.rgb=c.rgb*(.97+light*.17)+uWater*light*.3;
         c.rgb = mix(c.rgb, c.rgb*vec3(.74,.9,.62), uDirt*.5);
         gl_FragColor=c;
@@ -297,6 +424,13 @@ function atlasSprite(
 type FishVisual = {
   mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
   species: SpeciesId;
+};
+
+type PlantVisual = {
+  mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
+  x: number;
+  lift: number;
+  size: number;
 };
 
 type Pool = {
@@ -318,6 +452,7 @@ export class TankScene {
   private stage = new THREE.Group();
   private backdrop = new THREE.Group();
   private foreground = new THREE.Group();
+  private plantGroup = new THREE.Group();
   private decorGroup = new THREE.Group();
   private fishGroup = new THREE.Group();
 
@@ -337,15 +472,19 @@ export class TankScene {
   private causticSprites: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>[] = [];
 
   private fishTexture!: THREE.Texture;
+  private plantTexture!: THREE.Texture;
   private propTexture!: THREE.Texture;
+  private coinTexture!: THREE.Texture;
   private propCols = 4;
   private propRows = 2;
   private fishRegions = new Map<SpeciesId, { x: number; y: number; w: number; h: number }>();
   private atlasSize = { w: 1, h: 1 };
 
   private fishVisuals = new Map<number, FishVisual>();
+  private plantVisuals: PlantVisual[] = [];
   private pellets!: Pool;
   private pickups!: Pool;
+  private coins!: Pool;
   private particles!: Pool;
   private bubbles!: Pool;
   private shocks: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>[] = [];
@@ -379,10 +518,11 @@ export class TankScene {
     mount.appendChild(this.renderer.domElement);
 
     this.scene.add(this.backdrop, this.stage, this.foreground);
-    this.stage.add(this.decorGroup, this.fishGroup);
+    this.stage.add(this.plantGroup, this.decorGroup, this.fishGroup);
 
     this.buildTextures();
     this.buildBackdrop();
+    this.buildPlantLayer();
     this.buildPools();
     this.resize();
   }
@@ -404,6 +544,12 @@ export class TankScene {
     this.fishTexture.minFilter = THREE.NearestFilter;
     this.fishTexture.generateMipmaps = false;
 
+    this.plantTexture = new THREE.TextureLoader().load("/assets/bowl-plants-atlas-v2.png");
+    this.plantTexture.colorSpace = THREE.SRGBColorSpace;
+    this.plantTexture.magFilter = THREE.NearestFilter;
+    this.plantTexture.minFilter = THREE.NearestFilter;
+    this.plantTexture.generateMipmaps = false;
+
     const props = buildPropAtlas();
     this.propCols = props.cols;
     this.propRows = props.rows;
@@ -412,6 +558,12 @@ export class TankScene {
     this.propTexture.magFilter = THREE.NearestFilter;
     this.propTexture.minFilter = THREE.LinearFilter;
     this.propTexture.generateMipmaps = true;
+
+    this.coinTexture = new THREE.TextureLoader().load("/assets/coin-spin.png");
+    this.coinTexture.colorSpace = THREE.SRGBColorSpace;
+    this.coinTexture.magFilter = THREE.NearestFilter;
+    this.coinTexture.minFilter = THREE.NearestFilter;
+    this.coinTexture.generateMipmaps = false;
     this.propIndex = props.index;
   }
 
@@ -475,32 +627,57 @@ export class TankScene {
           float web = 1.0 - min(abs(w1), abs(w2));
           return pow(clamp(web, 0.0, 1.0), mix(6.5, 2.4, blur)) * mix(1.0, .6, blur);
         }
+        float posterize(float value) {
+          return floor(clamp(value, 0.0, 1.0) * 4.0 + .5) / 4.0;
+        }
         void main(){
           vec3 lightColor = mix(uTint * vec3(1.1, 1.6, 1.5), vec3(1.0, .72, .35), uHeat * .7);
+          // A fixed low-resolution sampling grid keeps every caustic edge crisp
+          // and stable regardless of the canvas resolution.
+          const vec2 PIXEL_GRID = vec2(224.0, 126.0);
+          vec2 pixelUv = (floor(vUv * PIXEL_GRID) + .5) / PIXEL_GRID;
           // Project each pixel onto the painted sand plane before sampling, so the
           // cells foreshorten with the floor instead of tiling flat up the screen.
           const float SAND_LINE = .356;
-          float run = clamp(vUv.y / SAND_LINE, 0.0, 1.14);
+          float run = clamp(pixelUv.y / SAND_LINE, 0.0, 1.14);
           float depth = 1.0 / mix(1.0 / 10.0, 1.0 / 20.0, run);
-          vec2 ground = vec2((vUv.x - .5) * depth * 1.44, depth) * 1.75;
+          vec2 ground = vec2((pixelUv.x - .5) * depth * 1.44, depth) * 1.75;
           ground.y -= uTime * .3;
           float blur = smoothstep(.5, 1.1, run) * .6;
           float reach = (1.0 - .45 * smoothstep(.65, 1.05, run)) * (1.0 - smoothstep(1.0, 1.13, run));
-          float pool = .58 + .42 * (1.0 - smoothstep(.08, .6, abs(vUv.x - .5)));
-          float caustics = (caustic(ground, uTime, blur) * .9
-                          + caustic(ground * vec2(.62, .74) + 11.3, -uTime * .73, blur) * .55)
-                          * reach * pool * .62;
-          float wall = caustic(vec2(vUv.x * 12.0, (vUv.y - SAND_LINE) * 22.0) + 3.1, uTime * .8, .55);
-          caustics += wall * smoothstep(.34, .44, vUv.y) * (1.0 - smoothstep(.48, .76, vUv.y)) * pool * .2;
+          float pool = .58 + .42 * (1.0 - smoothstep(.08, .6, abs(pixelUv.x - .5)));
 
-          float surfaceMask = smoothstep(.86, .985, vUv.y);
-          float wave = sin(vUv.x * 47.0 + uTime * 2.3) + sin(vUv.x * 81.0 - uTime * 1.65) * .55;
-          float surface = pow(.5 + .5 * sin((vUv.y - .895) * 175.0 + wave * 2.2), 8.0) * surfaceMask;
-          surface += pow(.5 + .5 * sin(vUv.x * 29.0 - uTime * 1.25 + vUv.y * 22.0), 10.0) * surfaceMask * .65;
+          // Offset red and blue by two low-res texels in opposite directions.
+          // Sampling the caustic itself (rather than tinting one mask) creates the
+          // little cyan/red fringes of chromatic aberration around bright cells.
+          vec2 split = vec2(2.0, .75) / PIXEL_GRID;
+          vec2 groundDx = vec2(split.x * depth * 1.44, split.y * depth) * 1.75;
+          vec3 caustics;
+          caustics.r = caustic(ground + groundDx, uTime, blur) * .9
+                     + caustic((ground + groundDx) * vec2(.62, .74) + 11.3, -uTime * .73, blur) * .55;
+          caustics.g = caustic(ground, uTime, blur) * .9
+                     + caustic(ground * vec2(.62, .74) + 11.3, -uTime * .73, blur) * .55;
+          caustics.b = caustic(ground - groundDx, uTime, blur) * .9
+                     + caustic((ground - groundDx) * vec2(.62, .74) + 11.3, -uTime * .73, blur) * .55;
+          caustics = vec3(posterize(caustics.r), posterize(caustics.g), posterize(caustics.b)) * reach * pool * .62;
+
+          vec2 wallUv = vec2(pixelUv.x * 12.0, (pixelUv.y - SAND_LINE) * 22.0) + 3.1;
+          vec2 wallSplit = split * vec2(12.0, 22.0);
+          vec3 wall = vec3(caustic(wallUv + wallSplit, uTime * .8, .55),
+                           caustic(wallUv, uTime * .8, .55),
+                           caustic(wallUv - wallSplit, uTime * .8, .55));
+          caustics += vec3(posterize(wall.r), posterize(wall.g), posterize(wall.b))
+                    * smoothstep(.34, .44, pixelUv.y) * (1.0 - smoothstep(.48, .76, pixelUv.y)) * pool * .2;
+
+          float surfaceMask = smoothstep(.86, .985, pixelUv.y);
+          float wave = sin(pixelUv.x * 47.0 + uTime * 2.3) + sin(pixelUv.x * 81.0 - uTime * 1.65) * .55;
+          float surface = pow(.5 + .5 * sin((pixelUv.y - .895) * 175.0 + wave * 2.2), 8.0) * surfaceMask;
+          surface += pow(.5 + .5 * sin(pixelUv.x * 29.0 - uTime * 1.25 + pixelUv.y * 22.0), 10.0) * surfaceMask * .65;
+          surface = posterize(surface);
 
           vec3 color = lightColor * caustics * (1.0 + uHeat * .6);
           color += lightColor * surface * .58;
-          float alpha = clamp(caustics * .92 + surface * .72, 0.0, .96);
+          float alpha = clamp(max(caustics.r, max(caustics.g, caustics.b)) * .92 + surface * .72, 0.0, .96);
           gl_FragColor = vec4(color, alpha);
         }`,
     });
@@ -517,24 +694,52 @@ export class TankScene {
       vertexShader: `varying vec2 vUv; void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
       fragmentShader: `
         uniform float uTime; uniform vec3 uTint; uniform float uHeat; varying vec2 vUv;
-        float ray(float origin, float width, float slope, float phase) {
-          float center = origin + (1.0 - vUv.y) * slope + sin(uTime * .31 + phase + vUv.y * 2.4) * .018;
-          float body = 1.0 - smoothstep(width * .2, width, abs(vUv.x - center));
-          float core = 1.0 - smoothstep(0.0, width * .24, abs(vUv.x - center));
-          return body * .6 + core * .28;
+        float hash(vec2 p) {
+          return fract(sin(dot(p, vec2(41.0, 289.0))) * 43758.5453);
+        }
+        float beam(vec2 uv, float source, float spread, float lean, float phase) {
+          float down = 1.0 - uv.y;
+          float speed = .19 + mod(phase, 1.7) * .075;
+          float sway = sin(uTime * speed + phase) * .038 * down;
+          sway += sin(uTime * speed * .57 + phase * 1.8) * .018 * down;
+          float center = source + lean * down + sway;
+          float widthPulse = .92 + .08 * sin(uTime * (speed * .8) + phase * 2.1);
+          float width = mix(.025, spread * widthPulse, down);
+          float edge = abs(uv.x - center) / width;
+
+          // A graded cone sampled on a coarse grid: softly layered like the old
+          // painted rays, but every transition remains a visible pixel cluster.
+          float body = 1.0 - smoothstep(.16, 1.0, edge);
+          body = floor(body * 5.0) / 5.0;
+          float reach = 1.0 - smoothstep(.5, .84, down);
+          float pulse = .76 + .24 * sin(uTime * (.4 + speed * .35) + phase);
+          return body * reach * pulse;
         }
         void main() {
-          float beams = ray(.2,.165,.2,.2) + ray(.5,.135,-.12,2.1) + ray(.79,.15,-.16,4.5);
-          float depthFade = smoothstep(.04,.5,vUv.y) * (1.0 - smoothstep(.985,1.0,vUv.y));
-          float shimmer = .72 + .18 * sin(uTime * .58 + vUv.y * 8.0) + .1 * sin(uTime * 1.13 + vUv.x * 13.0);
-          float strength = beams * depthFade * shimmer * (.26 + uHeat * .5);
-          gl_FragColor = vec4(uTint * strength, strength * .68);
+          vec2 grid = vec2(160.0, 90.0);
+          vec2 uv = (floor(vUv * grid) + .5) / grid;
+          // Preserve the original fan angles, but vary source spacing, width,
+          // brightness and phase so the left and right halves do not mirror.
+          float beams = beam(uv,.285,.05,-.38,.2) * .9
+                      + beam(uv,.36,.12,-.25,1.75) * 1.05
+                      + beam(uv,.435,.067,-.12,4.1) * .82
+                      + beam(uv,.505,.14,0.0,2.6) * 1.08
+                      + beam(uv,.565,.085,.12,5.4) * .93
+                      + beam(uv,.648,.098,.25,.85)
+                      + beam(uv,.72,.06,.38,3.9) * .78;
+
+          float down = 1.0 - uv.y;
+          float topGlow = 1.0 - smoothstep(0.0, .22, down);
+          vec2 pixel = floor(uv * grid);
+          float grain = .86 + hash(pixel + floor(uTime * .7)) * .14;
+          float strength = beams * grain * (.52 + topGlow * .18 + uHeat * .32);
+          vec3 lightColor = mix(uTint, vec3(1.0), .7);
+          gl_FragColor = vec4(lightColor * strength, min(.78, strength * .82));
         }`,
     });
     this.rayMesh = new THREE.Mesh(new THREE.PlaneGeometry(18, 10.2), this.rayMaterial);
-    this.rayMesh.position.z = 3.4;
-    this.rayMesh.renderOrder = 30;
-    this.foreground.add(this.rayMesh);
+    this.rayMesh.position.z = -5.3;
+    this.backdrop.add(this.rayMesh);
 
     // Muck: a green wash that grows with the dirt level. It is the only negative
     // feedback in the game, so it has to be legible before it is expensive.
@@ -565,7 +770,86 @@ export class TankScene {
 
   private midBase!: THREE.Texture;
 
-  private makePool(texture: THREE.Texture, capacity: number, additive: boolean, size: number): Pool {
+  private buildPlantLayer() {
+    const configs = [
+      { x: -1.13, lift: -0.01, size: 0.7, angle: -0.11, variant: 3, phase: 1.7, speed: 0.66, sway: 0.075, mirror: false, hue: -0.58, tint: [0.9, 1.02, 0.95] },
+      { x: -0.98, lift: 0.015, size: 1.22, angle: 0.015, variant: 0, phase: 0.3, speed: 0.72, sway: 0.08, mirror: false, hue: 0.2, tint: [0.94, 1.02, 0.96] },
+      { x: -0.82, lift: -0.005, size: 0.88, angle: 0.075, variant: 4, phase: 2.1, speed: 0.92, sway: 0.1, mirror: true, hue: 0.42, tint: [0.92, 1.02, 0.94] },
+      { x: -0.64, lift: 0.01, size: 1.04, angle: -0.065, variant: 2, phase: 4.7, speed: 0.64, sway: 0.075, mirror: false, hue: -0.3, tint: [0.95, 1.0, 0.98] },
+      { x: -0.47, lift: -0.015, size: 0.63, angle: 0.09, variant: 1, phase: 1.4, speed: 0.78, sway: 0.085, mirror: true, hue: 0.34, tint: [0.9, 1.0, 0.94] },
+      { x: -0.31, lift: 0.005, size: 0.47, angle: -0.045, variant: 5, phase: 5.5, speed: 0.58, sway: 0.065, mirror: false, hue: -0.47, tint: [0.94, 1.03, 0.92] },
+      { x: 0.32, lift: -0.01, size: 0.57, angle: 0.065, variant: 5, phase: 3.3, speed: 0.67, sway: 0.065, mirror: true, hue: 0.26, tint: [0.94, 1.03, 0.92] },
+      { x: 0.49, lift: 0.012, size: 0.8, angle: -0.085, variant: 1, phase: 0.8, speed: 0.7, sway: 0.085, mirror: false, hue: -0.18, tint: [0.9, 1.0, 0.94] },
+      { x: 0.68, lift: -0.008, size: 0.72, angle: 0.035, variant: 3, phase: 4.0, speed: 0.84, sway: 0.075, mirror: true, hue: 0.52, tint: [0.95, 1.0, 0.98] },
+      { x: 0.83, lift: 0.018, size: 1.18, angle: -0.025, variant: 4, phase: 2.8, speed: 0.6, sway: 0.1, mirror: false, hue: -0.4, tint: [0.92, 1.02, 0.94] },
+      { x: 1.0, lift: -0.012, size: 0.94, angle: 0.08, variant: 0, phase: 5.9, speed: 0.76, sway: 0.08, mirror: true, hue: 0.16, tint: [0.94, 1.02, 0.96] },
+      { x: 1.14, lift: 0.006, size: 0.66, angle: 0.13, variant: 3, phase: 4.9, speed: 0.69, sway: 0.075, mirror: true, hue: -0.52, tint: [0.9, 1.02, 0.95] },
+    ] as const;
+
+    for (const config of configs) {
+      const material = new THREE.ShaderMaterial({
+        uniforms: {
+          uTime: { value: 0 },
+          uPhase: { value: config.phase },
+          uSpeed: { value: config.speed },
+          uSway: { value: config.sway },
+          uDirt: { value: 0 },
+          uMap: { value: this.plantTexture },
+          uOffset: { value: new THREE.Vector2(
+            (config.variant % PLANT_ATLAS.cols) / PLANT_ATLAS.cols,
+            config.variant < PLANT_ATLAS.cols ? 0.5 : 0,
+          ) },
+          uRepeat: { value: new THREE.Vector2(1 / PLANT_ATLAS.cols, 1 / PLANT_ATLAS.rows) },
+          uWater: { value: this.waterColor.clone() },
+          uHue: { value: config.hue },
+          uTint: { value: new THREE.Color(config.tint[0], config.tint[1], config.tint[2]) },
+        },
+        vertexShader: plantVertex,
+        fragmentShader: plantFragment,
+        transparent: true,
+        depthWrite: false,
+      });
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 1.5, 4, 10), material);
+      const plantScale = config.size * 1.3;
+      mesh.scale.set(config.mirror ? -plantScale : plantScale, plantScale, 1);
+      mesh.rotation.z = config.angle;
+      mesh.position.z = -1.2 + this.plantVisuals.length * 0.006;
+      mesh.frustumCulled = false;
+      this.plantGroup.add(mesh);
+      this.plantVisuals.push({ mesh, x: config.x, lift: config.lift, size: config.size });
+    }
+  }
+
+  private placePlants() {
+    const b = this.world.bounds;
+    // The painted sand line is screen-locked while the simulation bounds change
+    // with aspect ratio. Anchor the visible roots in projected screen space so
+    // resizing cannot make the plants float above (or sink below) the backdrop.
+    const tanHalfFov = Math.tan(THREE.MathUtils.degToRad(this.camera.fov * 0.5));
+    for (const plant of this.plantVisuals) {
+      plant.mesh.position.x = plant.x * b.halfWidth;
+      // The bowl's rear sand ridge curves downward toward both glass edges.
+      // Match that ellipse instead of placing every root on one horizontal line.
+      const edgeCurve = 0.12 * Math.pow(Math.abs(plant.x), 1.7);
+      const rootNdcY = -0.4 - edgeCurve;
+      const worldZ = plant.mesh.position.z * this.scale;
+      const halfHeightAtPlant = tanHalfFov * (this.camera.position.z - worldZ);
+      const rootY = rootNdcY * halfHeightAtPlant / this.scale;
+      // Imagegen left about 11% transparent padding below each sprite; 0.58 is
+      // the measured centre-to-visible-root distance after that padding.
+      plant.mesh.position.y = rootY + plant.lift + plant.size * 0.58;
+    }
+  }
+
+  private makePool(
+    texture: THREE.Texture,
+    capacity: number,
+    additive: boolean,
+    size: number,
+    cols = this.propCols,
+    rows = this.propRows,
+    brightness = 1,
+  ): Pool {
     const geometry = new THREE.InstancedBufferGeometry();
     const plane = new THREE.PlaneGeometry(size, size);
     geometry.index = plane.index;
@@ -583,7 +867,8 @@ export class TankScene {
     const material = new THREE.ShaderMaterial({
       uniforms: {
         uMap: { value: texture },
-        uCellSize: { value: new THREE.Vector2(1 / this.propCols, 1 / this.propRows) },
+        uCellSize: { value: new THREE.Vector2(1 / cols, 1 / rows) },
+        uBrightness: { value: brightness },
       },
       vertexShader: propVertex,
       fragmentShader: propFragment,
@@ -607,15 +892,17 @@ export class TankScene {
   private buildPools() {
     this.pellets = this.makePool(this.propTexture, 512, false, 1);
     this.pickups = this.makePool(this.propTexture, 256, false, 1);
+    this.coins = this.makePool(this.coinTexture, 256, false, 1, 7, 1, 1.65);
     this.particles = this.makePool(this.propTexture, 900, true, 1);
     this.bubbles = this.makePool(this.propTexture, 220, true, 1);
-    this.stage.add(this.pellets.mesh, this.pickups.mesh, this.bubbles.mesh, this.particles.mesh);
+    this.stage.add(this.pellets.mesh, this.pickups.mesh, this.coins.mesh, this.bubbles.mesh, this.particles.mesh);
     // No renderOrder on the three "in the water" pools. An instanced mesh sorts as a
     // single object at its own position, so parking each pool at a representative
     // depth lets the fish weave in front of and behind the food and the coins —
     // forcing a renderOrder instead pastes all of it over every fish in the tank.
     this.pellets.mesh.position.z = 0.6;
     this.pickups.mesh.position.z = 0.85;
+    this.coins.mesh.position.z = 0.85;
     this.bubbles.mesh.position.z = 1.5;
     this.particles.mesh.renderOrder = 20;
 
@@ -630,8 +917,8 @@ export class TankScene {
       this.shocks.push(mesh);
     }
 
-    // Soft elliptical falloff rather than a plane: a hard-edged rectangle on the
-    // sand reads as a bug, not a shadow.
+    // Pixel-clustered oval matching the tank backdrop: hard cells and stepped
+    // values keep the shadow grounded without introducing a smooth blurred layer.
     const shadowGeometry = new THREE.PlaneGeometry(1, 1);
     for (let i = 0; i < 110; i++) {
       const material = new THREE.ShaderMaterial({
@@ -642,10 +929,19 @@ export class TankScene {
         fragmentShader: `
           varying vec2 vUv; uniform float uOpacity;
           void main(){
-            float d = length((vUv - .5) * 2.0);
-            float a = (1.0 - smoothstep(.25, 1.0, d)) * uOpacity;
-            if (a < .004) discard;
-            gl_FragColor = vec4(.016, .07, .12, a);
+            vec2 grid = vec2(32.0, 16.0);
+            vec2 cell = (floor(vUv * grid) + .5) / grid;
+            float d = length((cell - .5) * 2.0);
+            if (d >= 1.0) discard;
+
+            // Three solid pixel-art value bands instead of a soft falloff.
+            float band = d < .42 ? .72 : (d < .72 ? .46 : .24);
+            vec2 pixel = floor(vUv * grid);
+            float checker = mod(pixel.x + pixel.y, 2.0);
+            if (d > .72 && checker > .5) discard;
+
+            vec3 color = d < .42 ? vec3(.025, .16, .19) : vec3(.035, .22, .23);
+            gl_FragColor = vec4(color, band * uOpacity);
           }`,
       });
       const mesh = new THREE.Mesh(shadowGeometry, material);
@@ -706,6 +1002,9 @@ export class TankScene {
     for (const sprite of this.causticSprites) {
       (sprite.material.uniforms.uWater.value as THREE.Color).copy(this.waterColor);
     }
+    for (const plant of this.plantVisuals) {
+      (plant.mesh.material.uniforms.uWater.value as THREE.Color).copy(this.waterColor);
+    }
 
     const s = tank.scenery;
     const u = this.sceneryMaterial.uniforms;
@@ -717,6 +1016,8 @@ export class TankScene {
     (u.uRidge.value as THREE.Vector4).fromArray(s.ridge);
     (u.uFeature.value as THREE.Vector4).fromArray(s.features);
     this.applyBackground(tank.background);
+    this.plantGroup.visible = tank.index === 0;
+    this.placePlants();
 
     this.currentTank = this.game.state.tankIndex;
     this.syncDecor(true);
@@ -805,6 +1106,10 @@ export class TankScene {
     this.waterMaterial.uniforms.uHeat.value = heat;
     this.rayMaterial.uniforms.uTime.value = this.elapsed;
     this.rayMaterial.uniforms.uHeat.value = heat;
+    for (const plant of this.plantVisuals) {
+      plant.mesh.material.uniforms.uTime.value = this.elapsed;
+      plant.mesh.material.uniforms.uDirt.value = game.state.dirt;
+    }
     this.dirtMaterial.opacity = game.state.dirt * 0.42;
     this.frenzyMaterial.opacity = heat * 0.1 + world.frenzyFlash * 0.18;
     for (const sprite of this.causticSprites) {
@@ -818,13 +1123,17 @@ export class TankScene {
     this.syncBubbles();
     this.syncShocks();
 
-    // Camera shake rides the combo: at frenzy the whole tank is visibly rattling.
+    // Camera shake rides the combo: move the viewpoint so the whole tank rattles
+    // together instead of making the stage (and especially the plants) look like
+    // it is being shaken independently.
     const shakeTarget = heat * 0.034 + world.frenzyFlash * 0.036;
     this.shake += (shakeTarget - this.shake) * Math.min(1, dt * 6);
-    this.stage.position.x = Math.sin(this.elapsed * 37) * this.shake;
-    this.stage.position.y = Math.cos(this.elapsed * 31) * this.shake * 0.7;
-    this.foreground.position.x = this.stage.position.x * 0.6;
-    this.foreground.position.y = this.stage.position.y * 0.6;
+    this.stage.position.x = 0;
+    this.stage.position.y = 0;
+    this.foreground.position.x = 0;
+    this.foreground.position.y = 0;
+    this.camera.position.x = Math.sin(this.elapsed * 37) * this.shake;
+    this.camera.position.y = Math.cos(this.elapsed * 31) * this.shake * 0.7;
 
     if (this.ready) this.renderer.render(this.scene, this.camera);
   }
@@ -837,9 +1146,12 @@ export class TankScene {
         uPhase: { value: Math.random() * 6.28 },
         uBeat: { value: 0 },
         uEffort: { value: 0.6 },
+        uTurn: { value: 0 },
         uFar: { value: 0.4 },
         uFlash: { value: 0 },
         uDirt: { value: 0 },
+        uGoldfish: { value: species === "goldfish" ? 1 : 0 },
+        uBlink: { value: 0 },
         uWater: { value: this.waterColor.clone() },
         uTint: { value: new THREE.Color(1, 1, 1) },
         uMap: { value: this.fishTexture },
@@ -874,11 +1186,15 @@ export class TankScene {
       const { mesh } = visual;
       const def = SPECIES[f.species];
       const fade = f.dying > 0 ? Math.max(0, f.dying / 0.35) : 1;
-      mesh.position.set(f.x, f.y, -1.3 + f.depth * 4.3);
-      const depthScale = (0.78 + f.depth * 0.32) * f.size * fade;
-      const targetX = f.facing * depthScale;
+      // Keep every fish on one visual plane. With a perspective camera, changing
+      // z alone also changes the on-screen size even when mesh scale is constant.
+      mesh.position.set(f.x, f.y, 0);
+      // Depth still controls layering and haze, but must not change a fish's
+      // apparent size while it swims through the tank.
+      const visualScale = f.size * fade;
+      const targetX = f.facing * visualScale;
       mesh.scale.x += (targetX - mesh.scale.x) * Math.min(1, dt * 9);
-      mesh.scale.y = depthScale * (1 + Math.sin(this.elapsed * 3 + f.phase) * 0.014);
+      mesh.scale.y = visualScale * (1 + Math.sin(this.elapsed * 3 + f.phase) * 0.014);
       // Nose follows the swim direction; mirrored fish need the pitch mirrored too.
       const pitch = Math.sin(f.heading) * 0.42 * f.facing;
       mesh.rotation.z += (pitch - mesh.rotation.z) * Math.min(1, dt * 3.4);
@@ -887,9 +1203,16 @@ export class TankScene {
       u.uTime.value = this.elapsed;
       u.uBeat.value = f.beat;
       u.uEffort.value = 0.3 + Math.min(f.thrust, 1.2) * 0.95;
-      u.uFar.value = 1 - f.depth;
+      u.uTurn.value = mesh.rotation.z;
+      u.uFar.value = 0;
       u.uFlash.value = f.flash;
       u.uDirt.value = dirt;
+      if (f.species === "goldfish") {
+        const blink = (this.elapsed + f.phase * 1.37) % 1.8;
+        // Three discrete frames make the lids meet and separate cleanly while
+        // preserving the deliberately stepped pixel-art motion.
+        u.uBlink.value = blink < 0.07 ? 0.55 : blink < 0.19 ? 1 : blink < 0.27 ? 0.55 : 0;
+      }
       (u.uWater.value as THREE.Color).copy(this.waterColor);
       const tint = u.uTint.value as THREE.Color;
       if (f.variant) {
@@ -943,7 +1266,7 @@ export class TankScene {
       this.dummy.position.set(p.x, p.y, p.z);
       this.dummy.rotation.z = p.id * 0.7 + p.age * 1.4;
       const pulse = p.settled > 0 ? 0.82 : 1 + Math.sin(this.elapsed * 9 + p.id) * 0.06;
-      this.dummy.scale.setScalar(0.2 * pulse);
+      this.dummy.scale.setScalar(0.1 * pulse);
       this.dummy.updateMatrix();
       pool.mesh.setMatrixAt(n, this.dummy.matrix);
       pool.color.setXYZ(n, food[0], food[1], food[2]);
@@ -957,9 +1280,31 @@ export class TankScene {
   private syncPickups() {
     const pool = this.pickups;
     let n = 0;
+    let coinN = 0;
     for (const p of this.world.pickups) {
-      if (n >= pool.capacity) break;
       if (p.collected) continue;
+      const fadeIn = Math.min(1, p.age * 8);
+      const nearExpiry = Math.max(0, 1 - Math.max(0, p.age - (this.game.derived.autoCollect - 0.6)) * 2);
+
+      if (p.kind === "coin") {
+        if (coinN >= this.coins.capacity) continue;
+        // Horizontal foreshortening is authored directly into all seven frames;
+        // runtime scaling stays uniform so the pixel art is never distorted.
+        const frame = Math.floor(p.spin * 2.2) % 7;
+        this.dummy.position.set(p.x, p.y, p.z);
+        this.dummy.rotation.z = Math.sin(p.spin * 0.45) * 0.12;
+        const pop = Math.min(1, p.age * 6);
+        this.dummy.scale.setScalar(0.2 * pop);
+        this.dummy.updateMatrix();
+        this.coins.mesh.setMatrixAt(coinN, this.dummy.matrix);
+        this.coins.color.setXYZ(coinN, 1, 1, 1);
+        this.coins.alpha.setX(coinN, fadeIn * (0.5 + nearExpiry * 0.5));
+        this.coins.cell.setXY(coinN, frame / 7, 0);
+        coinN++;
+        continue;
+      }
+
+      if (n >= pool.capacity) continue;
       const [cu, cv] = this.cellFor(p.kind);
       this.dummy.position.set(p.x, p.y, p.z);
       this.dummy.rotation.z = Math.sin(p.spin) * 0.25;
@@ -972,13 +1317,12 @@ export class TankScene {
       this.dummy.updateMatrix();
       pool.mesh.setMatrixAt(n, this.dummy.matrix);
       pool.color.setXYZ(n, 1, 1, 1);
-      const fadeIn = Math.min(1, p.age * 8);
-      const nearExpiry = Math.max(0, 1 - Math.max(0, p.age - (this.game.derived.autoCollect - 0.6)) * 2);
       pool.alpha.setX(n, fadeIn * (0.5 + nearExpiry * 0.5));
       pool.cell.setXY(n, cu, cv);
       n++;
     }
     this.commit(pool, n);
+    this.commit(this.coins, coinN);
   }
 
   private syncParticles() {

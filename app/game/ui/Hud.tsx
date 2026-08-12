@@ -5,12 +5,14 @@ import { formatDuration, formatMultiplier, formatNumber, formatRate } from "../f
 import type { Game } from "../game";
 
 export function HudBar({
-  game, paused, onTogglePause, onReset,
+  game, paused, onTogglePause, onReset, onToggleDebug, debugOpen,
 }: {
   game: Game;
   paused: boolean;
   onTogglePause: () => void;
   onReset: () => void;
+  onToggleDebug: () => void;
+  debugOpen: boolean;
 }) {
   const tank = TANKS[Math.min(game.state.tankIndex, TANKS.length - 1)];
   const fish = game.live.fishAlive;
@@ -48,6 +50,7 @@ export function HudBar({
           title="Köpekbalığı avlansın mı?"
           disabled={(game.fishCounts.shark ?? 0) === 0}
         >🦈</button>
+        <button onClick={onToggleDebug} className={debugOpen ? "on" : ""} title="Debug paneli">🛠</button>
         <button onClick={onReset} title="Sıfırla" className="danger">⟲</button>
       </div>
     </header>

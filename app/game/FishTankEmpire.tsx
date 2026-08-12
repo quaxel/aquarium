@@ -7,6 +7,7 @@ import { buildCursor } from "./sprites";
 import { World } from "./world";
 import { HudBar, ComboMeter, FoodBar, Toasts, TankStatus, OfflineReport } from "./ui/Hud";
 import { ShopPanel } from "./ui/Shop";
+import { DebugPanel } from "./ui/DebugPanel";
 
 // Glue. React owns the shop and the readouts; the RAF loop owns the tank. The only
 // bridge between them is `game.flush()`, which is deliberately throttled so a frame
@@ -63,6 +64,7 @@ function GameShell({ engine }: { engine: Engine }) {
   const popupRef = useRef<HTMLDivElement>(null);
   const [paused, setPaused] = useState(false);
   const [shopOpen, setShopOpen] = useState(true);
+  const [debugOpen, setDebugOpen] = useState(true);
   const [showOffline, setShowOffline] = useState(() => game.offlineReport !== null);
 
   const pausedRef = useRef(paused);
@@ -141,6 +143,7 @@ function GameShell({ engine }: { engine: Engine }) {
         node.style.opacity = `${Math.min(1, popup.life * 1.6)}`;
         node.style.color = popup.color;
         node.classList.toggle("big", popup.big);
+        node.classList.toggle("earning", popup.text.startsWith("+"));
         if (node.textContent !== popup.text) node.textContent = popup.text;
       }
     };
@@ -197,7 +200,10 @@ function GameShell({ engine }: { engine: Engine }) {
 
   return (
     <main className={`ft-shell${frenzy ? " frenzy" : ""}`} data-tank={game.state.tankIndex}>
-      <HudBar game={game} paused={paused} onTogglePause={() => setPaused((v) => !v)} onReset={wipe} />
+      <HudBar game={game} paused={paused} onTogglePause={() => setPaused((v) => !v)} onReset={wipe}
+        onToggleDebug={() => setDebugOpen((v) => !v)} debugOpen={debugOpen} />
+
+      {debugOpen && <DebugPanel game={game} onClose={() => setDebugOpen(false)} />}
 
       <div className="ft-body">
         <section className="ft-stage">

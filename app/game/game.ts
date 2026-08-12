@@ -524,6 +524,21 @@ export class Game {
     return true;
   }
 
+  /** Development-only controls used by the in-game debug panel. */
+  debugSetTank(index: number) {
+    const next = Math.max(0, Math.min(TANKS.length - 1, Math.floor(index)));
+    this.state.tankIndex = next;
+    this.applyReputationUnlocks();
+    this.rebuildRequested = true;
+    this.recompute();
+  }
+
+  debugAdjustCoins(amount: number) {
+    if (!Number.isFinite(amount) || amount === 0) return;
+    this.state.coins = Math.max(0, this.state.coins + amount);
+    this.touch();
+  }
+
   applyReputationUnlocks() {
     let changed = false;
     for (const unlock of REPUTATION_UNLOCKS) {
