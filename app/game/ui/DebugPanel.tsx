@@ -4,8 +4,10 @@ import { useState } from "react";
 import { TANKS } from "../content";
 import { formatNumber } from "../format";
 import type { Game } from "../game";
+import { useI18n } from "../i18n";
 
 export function DebugPanel({ game, onClose }: { game: Game; onClose: () => void }) {
+  const { t } = useI18n();
   const [amount, setAmount] = useState("1000");
 
   const changeCoins = (direction: 1 | -1) => {
@@ -14,13 +16,13 @@ export function DebugPanel({ game, onClose }: { game: Game; onClose: () => void 
   };
 
   return (
-    <aside className="ft-debug" aria-label="Debug panel">
+    <aside className="ft-debug" aria-label={t("debugPanel")}>
       <div className="ft-debug-head">
-        <div><small>GELİŞTİRİCİ</small><strong>DEBUG PANELİ</strong></div>
-        <button type="button" onClick={onClose} aria-label="Debug panelini kapat">×</button>
+        <div><small>{t("developer")}</small><strong>{t("debugPanel")}</strong></div>
+        <button type="button" onClick={onClose} aria-label={t("closeDebug")}>×</button>
       </div>
       <label className="ft-debug-field">
-        <span>TANKA GİT</span>
+        <span>{t("goTank")}</span>
         <select value={game.state.tankIndex} onChange={(event) => game.debugSetTank(Number(event.target.value))}>
           {TANKS.map((tank) => (
             <option key={tank.index} value={tank.index}>{tank.index + 1}. {tank.emoji} {tank.name}</option>
@@ -28,14 +30,14 @@ export function DebugPanel({ game, onClose }: { game: Game; onClose: () => void 
         </select>
       </label>
       <div className="ft-debug-coins">
-        <span>PARA <b>{formatNumber(game.state.coins)}</b></span>
+        <span>{t("money")} <b>{formatNumber(game.state.coins)}</b></span>
         <label>
-          <span>MİKTAR</span>
-          <input value={amount} onChange={(event) => setAmount(event.target.value)} inputMode="decimal" type="number" min="0" step="100" aria-label="Para miktarı" />
+          <span>{t("amount")}</span>
+          <input value={amount} onChange={(event) => setAmount(event.target.value)} inputMode="decimal" type="number" min="0" step="100" aria-label={t("amount")} />
         </label>
         <div>
-          <button type="button" className="add" onClick={() => changeCoins(1)}>+ EKLE</button>
-          <button type="button" className="remove" onClick={() => changeCoins(-1)}>− ÇIKAR</button>
+          <button type="button" className="add" onClick={() => changeCoins(1)}>{t("add")}</button>
+          <button type="button" className="remove" onClick={() => changeCoins(-1)}>{t("remove")}</button>
         </div>
       </div>
     </aside>

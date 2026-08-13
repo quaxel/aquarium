@@ -241,7 +241,6 @@ Konsoldan kendin oynayabilirsin: `__tank.game` ve `__tank.world` açık.
 
 ## Kayıt
 
-`localStorage` (`fish-tank-empire/v1`), 15 saniyede bir ve sekme kapanırken.
-Sekme arka plandayken tarayıcı `requestAnimationFrame`'i durdurur; döngü 45
-saniyeden büyük kareler arası boşluğu askıya alınma olarak yorumlar ve çevrimdışı
-kazancı öder.
+`localStorage` (`fish-tank-empire/v2`), 15 saniyede bir, sekme arka plana alınırken
+ve kapanırken kaydedilir. Oyun kapalıyken veya sekme askıdayken ekonomi ilerlemez;
+çevrimdışı kazanç yoktur.

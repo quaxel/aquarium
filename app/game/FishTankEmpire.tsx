@@ -2,10 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Game } from "./game";
+import { LanguageProvider, useI18n } from "./i18n";
 import { TankScene } from "./scene";
 import { buildCursor } from "./sprites";
 import { World } from "./world";
-import { HudBar, ComboMeter, FoodBar, Toasts, TankStatus, OfflineReport } from "./ui/Hud";
+import { HudBar, GameHud, ComboMeter, FoodBar, Toasts, TankStatus } from "./ui/Hud";
 import { ShopPanel } from "./ui/Shop";
 import { DebugPanel } from "./ui/DebugPanel";
 
@@ -18,8 +19,7 @@ const HUD_HZ = 12;
 type Engine = { game: Game; world: World };
 
 // A module singleton rather than per-mount state: StrictMode's double effect and
-// HMR both remount this component, and loading the save twice would pay the
-// offline bonus twice.
+// HMR both remount this component, but the engine should only load the save once.
 let engineSingleton: Engine | null = null;
 function getEngine(): Engine {
   if (!engineSingleton) {
@@ -36,6 +36,10 @@ const noSubscribe = () => () => {};
 const serverEngine = () => null;
 
 export function FishTankEmpire() {
+  return <LanguageProvider><FishTankEmpireInner /></LanguageProvider>;
+}
+
+function FishTankEmpireInner() {
   // The engine needs localStorage, a canvas and `document`, so it cannot exist
   // during the server render — this is the client-only gate.
   const engine = useSyncExternalStore(noSubscribe, getEngine, serverEngine);
@@ -44,18 +48,20 @@ export function FishTankEmpire() {
 }
 
 function BootScreen() {
+  const { t } = useI18n();
   return (
     <main className="ft-boot">
       <div className="ft-boot-inner">
         <span className="ft-boot-fish">🐟</span>
         <strong>FISH TANK EMPIRE</strong>
-        <small>tank dolduruluyor…</small>
+        <small>{t("loading")}</small>
       </div>
     </main>
   );
 }
 
 function GameShell({ engine }: { engine: Engine }) {
+  const { t } = useI18n();
   const { game, world } = engine;
   // One subscription for the whole tree; every panel reads straight off `game`.
   useSyncExternalStore(game.subscribe, game.getSnapshot, game.getSnapshot);
@@ -63,9 +69,10 @@ function GameShell({ engine }: { engine: Engine }) {
   const mountRef = useRef<HTMLDivElement>(null);
   const popupRef = useRef<HTMLDivElement>(null);
   const [paused, setPaused] = useState(false);
-  const [shopOpen, setShopOpen] = useState(true);
-  const [debugOpen, setDebugOpen] = useState(true);
-  const [showOffline, setShowOffline] = useState(() => game.offlineReport !== null);
+  const [hudOpen, setHudOpen] = useState(false);
+  const [foodOpen, setFoodOpen] = useState(false);
+  const [shopOpen, setShopOpen] = useState(false);
+  const [debugOpen, setDebugOpen] = useState(false);
 
   const pausedRef = useRef(paused);
   useEffect(() => { pausedRef.current = paused; }, [paused]);
@@ -157,8 +164,6 @@ function GameShell({ engine }: { engine: Engine }) {
       raf = requestAnimationFrame(animate);
       const raw = (now - last) / 1000;
       last = now;
-      // A gap this large means the tab was suspended, not that we dropped a frame.
-      if (raw > 45) { game.grantIdle(raw); setShowOffline(game.offlineReport !== null); }
       const dt = Math.min(raw, 0.05);
       if (game.rebuildRequested) { game.rebuildRequested = false; world.rebuild(); }
       if (!pausedRef.current) world.step(dt);
@@ -192,16 +197,31 @@ function GameShell({ engine }: { engine: Engine }) {
   }, [game, world]);
 
   const wipe = useCallback(() => {
-    if (window.confirm("Tüm ilerleme silinecek. Emin misin?")) game.reset();
-  }, [game]);
+    if (window.confirm(t("resetConfirm"))) game.reset();
+  }, [game, t]);
 
   const dirt = game.state.dirt;
   const frenzy = game.live.frenzy > 0;
 
   return (
     <main className={`ft-shell${frenzy ? " frenzy" : ""}`} data-tank={game.state.tankIndex}>
-      <HudBar game={game} paused={paused} onTogglePause={() => setPaused((v) => !v)} onReset={wipe}
-        onToggleDebug={() => setDebugOpen((v) => !v)} debugOpen={debugOpen} />
+      <section className={`ft-drawer ft-drawer-hud${hudOpen ? " open" : ""}`}>
+        <div className="ft-drawer-content">
+          <div id="status-panel" aria-hidden={!hudOpen}>
+            <HudBar game={game} paused={paused} onTogglePause={() => setPaused((v) => !v)} onReset={wipe}
+              onToggleDebug={() => setDebugOpen((v) => !v)} debugOpen={debugOpen} />
+          </div>
+          <button
+            className="ft-drawer-tab ft-hud-tab"
+            type="button"
+            onClick={() => setHudOpen((v) => !v)}
+            aria-expanded={hudOpen}
+            aria-controls="status-panel"
+          >
+            <span>🐟</span> {t("status")} <i>{hudOpen ? "▲" : "▼"}</i>
+          </button>
+        </div>
+      </section>
 
       {debugOpen && <DebugPanel game={game} onClose={() => setDebugOpen(false)} />}
 
@@ -211,34 +231,52 @@ function GameShell({ engine }: { engine: Engine }) {
             <div className="ft-tank" ref={mountRef} />
             <div className="ft-popups" ref={popupRef} />
             <div className="ft-glass" aria-hidden="true" />
+            <GameHud game={game} />
             {dirt > 0.25 && (
               <div className="ft-dirty-warning">
-                💚 SU KİRLENDİ — üretim %{Math.round(game.derived.dirtPenalty * 100)} düşük
+                💚 {t("dirty", { percent: Math.round(game.derived.dirtPenalty * 100) })}
               </div>
             )}
             <ComboMeter game={game} />
             <TankStatus game={game} />
-            {paused && <div className="ft-paused">DURAKLATILDI</div>}
+            {paused && <div className="ft-paused">{t("paused")}</div>}
           </div>
-          <FoodBar game={game} />
-          <p className="ft-hint">
-            Suyun içine <b>tıkla ve sürükle</b> — yem serpersin. Hızlı serptikçe combo yükselir,
-            {" "}<b>90</b> comboda <b>FEEDING FRENZY</b> başlar.
-          </p>
         </section>
 
-        <aside className={`ft-shop${shopOpen ? " open" : ""}`}>
-          <button className="ft-shop-toggle" onClick={() => setShopOpen((v) => !v)}>
-            {shopOpen ? "▼ MAĞAZAYI KAPAT" : "▲ MAĞAZA"}
+        <aside className={`ft-drawer ft-drawer-shop${shopOpen ? " open" : ""}`}>
+          <button
+            className="ft-drawer-tab ft-shop-tab"
+            type="button"
+            onClick={() => setShopOpen((v) => !v)}
+            aria-expanded={shopOpen}
+            aria-controls="shop-panel"
+          >
+            <span>🛒</span><b>{t("shop")}</b><i>{shopOpen ? "▶" : "◀"}</i>
           </button>
-          <ShopPanel game={game} />
+          <div className="ft-shop" id="shop-panel" aria-hidden={!shopOpen}>
+            <ShopPanel game={game} />
+          </div>
         </aside>
       </div>
 
+      <section className={`ft-drawer ft-drawer-food${foodOpen ? " open" : ""}`}>
+        <div className="ft-food-drawer-content">
+          <button
+            className="ft-drawer-tab ft-food-tab"
+            type="button"
+            onClick={() => setFoodOpen((v) => !v)}
+            aria-expanded={foodOpen}
+            aria-controls="food-panel"
+          >
+            <span>🍤</span> {t("food")} <i>{foodOpen ? "▼" : "▲"}</i>
+          </button>
+          <div id="food-panel" aria-hidden={!foodOpen}>
+            <FoodBar game={game} />
+          </div>
+        </div>
+      </section>
+
       <Toasts game={game} />
-      {showOffline && game.offlineReport && (
-        <OfflineReport report={game.offlineReport} onClose={() => setShowOffline(false)} />
-      )}
     </main>
   );
 }

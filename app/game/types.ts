@@ -21,7 +21,7 @@ export type UpgradeId =
   | "autoFeeder" | "feederRate" | "feederSpread" | "smartFeeder"
   | "filter" | "heater" | "airStone" | "breeding"
   | "comboGrace" | "comboRamp" | "frenzyLength" | "frenzyPower"
-  | "offlineBucket" | "glassPolish";
+  | "glassPolish";
 
 /** What a fish does beyond turning food into coins. */
 export type Ability =
@@ -76,6 +76,8 @@ export type Species = {
   swimSpeed: number;
   /** Adult body length in world units. */
   length: number;
+  /** Renderer-only multiplier for silhouettes that read smaller than their body length. */
+  visualScale?: number;
   /** 0 hugs the sand, 1 hangs at the surface. */
   depthBias: number;
   floorDweller?: boolean;
@@ -258,9 +260,6 @@ export type GameState = {
   sharkDiet: boolean;
   autoFeedOn: boolean;
   stats: GameStats;
-  /** Rolling coins-per-second, persisted so offline earnings have something to go on. */
-  cpsEstimate: number;
-  lastSeen: number;
   runStart: number;
 };
 
@@ -291,8 +290,6 @@ export type Derived = {
   comboRamp: number;
   frenzyLength: number;
   frenzyPower: number;
-  offlineHours: number;
-  offlineEfficiency: number;
   reputationMul: number;
   dirtPenalty: number;
   /** From synergies and decor. */

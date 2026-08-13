@@ -34,15 +34,20 @@ export function formatMultiplier(value: number): string {
   return `×${formatNumber(value)}`;
 }
 
-export function formatDuration(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds <= 0) return "0sn";
+export function formatDuration(seconds: number, language: "tr" | "en" | "de" | "fr" = "tr"): string {
+  const units = language === "tr"
+    ? { s: "sn", m: "dk", h: "sa", d: "g" }
+    : language === "de"
+      ? { s: "s", m: "Min", h: "Std", d: "T" }
+      : { s: "s", m: "min", h: "h", d: "d" };
+  if (!Number.isFinite(seconds) || seconds <= 0) return `0${units.s}`;
   const s = Math.floor(seconds);
-  if (s < 60) return `${s}sn`;
+  if (s < 60) return `${s}${units.s}`;
   const m = Math.floor(s / 60);
-  if (m < 60) return `${m}dk ${s % 60}sn`;
+  if (m < 60) return `${m}${units.m} ${s % 60}${units.s}`;
   const h = Math.floor(m / 60);
-  if (h < 24) return `${h}sa ${m % 60}dk`;
-  return `${Math.floor(h / 24)}g ${h % 24}sa`;
+  if (h < 24) return `${h}${units.h} ${m % 60}${units.m}`;
+  return `${Math.floor(h / 24)}${units.d} ${h % 24}${units.h}`;
 }
 
 export function formatPercent(value: number, digits = 0): string {

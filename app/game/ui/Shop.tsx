@@ -7,16 +7,17 @@ import {
 } from "../content";
 import { formatDuration, formatMultiplier, formatNumber, formatPercent } from "../format";
 import type { Game } from "../game";
+import { statLabels, useI18n } from "../i18n";
 import { speciesPortrait } from "../sprites";
 import type { SpeciesId, UpgradeCategory } from "../types";
 
 const TABS = [
-  { id: "fish", label: "BALIK", emoji: "🐟" },
-  { id: "upgrades", label: "YÜKSELTME", emoji: "⚙️" },
-  { id: "decor", label: "DEKOR", emoji: "🪸" },
-  { id: "synergy", label: "SİNERJİ", emoji: "🔗" },
-  { id: "tank", label: "TANK", emoji: "🏆" },
-  { id: "stats", label: "KAYIT", emoji: "📊" },
+  { id: "fish", label: "tabFish", emoji: "🐟" },
+  { id: "upgrades", label: "tabUpgrades", emoji: "⚙️" },
+  { id: "decor", label: "tabDecor", emoji: "🪸" },
+  { id: "synergy", label: "tabSynergy", emoji: "🔗" },
+  { id: "tank", label: "tabTank", emoji: "🏆" },
+  { id: "stats", label: "tabStats", emoji: "📊" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -29,17 +30,18 @@ function portrait(id: SpeciesId): string {
 }
 
 export function ShopPanel({ game }: { game: Game }) {
+  const { t } = useI18n();
   const [tab, setTab] = useState<TabId>("fish");
   const synergyCount = game.derived.activeSynergies.length;
   return (
     <div className="ft-shop-inner">
       <nav className="ft-tabs">
-        {TABS.map((t) => (
-          <button key={t.id} className={tab === t.id ? "active" : ""} onClick={() => setTab(t.id)}>
-            <span>{t.emoji}</span>
-            {t.label}
-            {t.id === "synergy" && synergyCount > 0 && <i className="ft-badge">{synergyCount}</i>}
-            {t.id === "tank" && game.canMoveTank() && <i className="ft-badge pulse">!</i>}
+        {TABS.map((item) => (
+          <button key={item.id} className={tab === item.id ? "active" : ""} onClick={() => setTab(item.id)}>
+            <span>{item.emoji}</span>
+            {t(item.label)}
+            {item.id === "synergy" && synergyCount > 0 && <i className="ft-badge">{synergyCount}</i>}
+            {item.id === "tank" && game.canMoveTank() && <i className="ft-badge pulse">!</i>}
           </button>
         ))}
       </nav>
@@ -58,22 +60,22 @@ export function ShopPanel({ game }: { game: Game }) {
 // ── Fish ─────────────────────────────────────────────────────────────────────
 
 function FishTab({ game }: { game: Game }) {
+  const { t } = useI18n();
   const cap = game.derived.fishCap;
   const total = game.live.fishAlive;
-  const visible = SPECIES_ORDER.filter(
-    (id) => game.state.unlockedSpecies.includes(id) || SPECIES[id].tier <= game.state.tankIndex + 1,
-  );
+  // Keep future species in the list as dark silhouettes so the full collection
+  // remains discoverable without making locked fish purchasable.
+  const visible = SPECIES_ORDER;
   return (
     <div className="ft-list">
-      <div className="ft-list-note">
-        Tank kapasitesi <b>{total}/{cap}</b>. Daha fazla balık için <b>daha büyük tanka</b> taşın.
-      </div>
+      <div className="ft-list-note">{t("capacity", { current: total, cap })}</div>
       {visible.map((id) => <FishRow key={id} game={game} id={id} />)}
     </div>
   );
 }
 
 function FishRow({ game, id }: { game: Game; id: SpeciesId }) {
+  const { t, speciesName, speciesBlurb, abilityLabel } = useI18n();
   const def = SPECIES[id];
   const owned = game.fishCounts[id] ?? 0;
   const unlocked = game.state.unlockedSpecies.includes(id);
@@ -96,27 +98,27 @@ function FishRow({ game, id }: { game: Game; id: SpeciesId }) {
       <img src={image} alt="" className="ft-portrait" />
       <div className="ft-card-main">
         <header>
-          <b>{def.name}</b>
+          <b>{speciesName(id, def.name)}</b>
           {owned > 0 && <span className="ft-owned">×{owned}</span>}
           {synergy && synergy > 1 && <span className="ft-syn">{formatMultiplier(synergy)}</span>}
         </header>
-        <p>{def.blurb}</p>
+        <p>{speciesBlurb(id, def.blurb)}</p>
         <div className="ft-tags">
-          <i>{formatNumber(throughput)}/sn</i>
-          <i>{formatNumber(def.baseValue)} / lokma</i>
-          {def.abilities.map((a) => <i key={a.kind} className="ability">{ABILITY_LABELS[a.kind]}</i>)}
+          <i>{formatNumber(throughput)}{t("perSecondShort")}</i>
+          <i>{t("perBite", { value: formatNumber(def.baseValue) })}</i>
+          {def.abilities.map((a) => <i key={a.kind} className="ability">{abilityLabel(a.kind, ABILITY_LABELS[a.kind])}</i>)}
         </div>
         {unlocked && (owned > 0 || school > 0) && (
           <button
             className="ft-school"
             onClick={() => game.buySchoolLevel(id)}
             disabled={game.state.coins < schoolPrice}
-            title="Yetiştirme programı: bu türün üretimini kalıcı olarak artırır"
+            title={t("breedingHint")}
           >
-            <b>🧬 Sürü sv.{school}</b>
+            <b>{t("breeding", { level: school })}</b>
             <span>
               {formatMultiplier(schoolMultiplier(school))} → {formatMultiplier(schoolMultiplier(school + 1))}
-              {schoolToMilestone(school) <= 3 && <i className="ft-milestone"> ×1.35&apos;e {schoolToMilestone(school)}</i>}
+              {schoolToMilestone(school) <= 3 && <i className="ft-milestone"> {t("milestone", { count: schoolToMilestone(school) })}</i>}
             </span>
             <em>{formatNumber(schoolPrice)}</em>
           </button>
@@ -127,11 +129,11 @@ function FishRow({ game, id }: { game: Game; id: SpeciesId }) {
           className="ft-buy"
           onClick={() => game.buyFish(id)}
           disabled={!can}
-          title={!unlocked ? "Henüz açılmadı" : full ? "Tank dolu" : ""}
+          title={!unlocked ? t("locked") : full ? t("tankFull") : ""}
         >
           {unlocked ? <>
             <span>{formatNumber(cost)}</span>
-            <small>{full ? "TANK DOLU" : "SATIN AL"}</small>
+            <small>{full ? t("tankFull") : t("buy")}</small>
           </> : <>
             <span>🔒</span>
             <small>TANK {def.tier + 1}</small>
@@ -141,9 +143,9 @@ function FishRow({ game, id }: { game: Game; id: SpeciesId }) {
           <button
             className="ft-sell"
             onClick={() => game.sellFish(id)}
-            title="En küçük olanı sat ve slotu boşalt"
+            title={t("sellHint")}
           >
-            SAT +{formatNumber(game.sellRefund(id))}
+            {t("sell", { value: formatNumber(game.sellRefund(id)) })}
           </button>
         )}
       </div>
@@ -167,6 +169,7 @@ const ABILITY_LABELS: Record<string, string> = {
 // ── Upgrades ─────────────────────────────────────────────────────────────────
 
 function UpgradeTab({ game }: { game: Game }) {
+  const { language, t, categoryLabel, extraText } = useI18n();
   const categories: UpgradeCategory[] = ["feed", "fish", "collect", "auto", "frenzy"];
   return (
     <div className="ft-list">
@@ -176,7 +179,7 @@ function UpgradeTab({ game }: { game: Game }) {
         if (!rows.length) return null;
         return (
           <section key={category} className="ft-group">
-            <h3>{CATEGORY_LABELS[category]}</h3>
+            <h3>{categoryLabel(category, CATEGORY_LABELS[category])}</h3>
             {rows.map((id) => {
               const upgrade = UPGRADES[id];
               const level = game.state.upgrades[id] ?? 0;
@@ -188,15 +191,15 @@ function UpgradeTab({ game }: { game: Game }) {
                   <span className="ft-emoji">{upgrade.emoji}</span>
                   <div className="ft-card-main">
                     <header>
-                      <b>{upgrade.name}</b>
+                      <b>{extraText(id, 0, upgrade.name)}</b>
                       {upgrade.maxLevel > 1 && (
                         <span className="ft-level">{level}/{upgrade.maxLevel}</span>
                       )}
                     </header>
-                    <p>{maxed ? upgrade.blurb : upgrade.detail(level)}</p>
+                    <p>{language === "tr" && !maxed ? upgrade.detail(level) : extraText(id, 1, upgrade.blurb)}</p>
                     {!available && upgrade.requires?.upgrade && (
                       <p className="ft-req">
-                        Gerekli: {UPGRADES[upgrade.requires.upgrade[0]].name} sv.{upgrade.requires.upgrade[1]}
+                        {t("required")}: {extraText(upgrade.requires.upgrade[0], 0, UPGRADES[upgrade.requires.upgrade[0]].name)} {t("level")}{upgrade.requires.upgrade[1]}
                       </p>
                     )}
                   </div>
@@ -205,9 +208,9 @@ function UpgradeTab({ game }: { game: Game }) {
                     onClick={() => game.buyUpgrade(id)}
                     disabled={maxed || !available || game.state.coins < cost}
                   >
-                    {maxed ? <span>MAKS</span> : <>
+                    {maxed ? <span>{t("max")}</span> : <>
                       <span>{formatNumber(cost)}</span>
-                      <small>AL</small>
+                      <small>{t("get")}</small>
                     </>}
                   </button>
                 </article>
@@ -223,11 +226,10 @@ function UpgradeTab({ game }: { game: Game }) {
 // ── Decor ────────────────────────────────────────────────────────────────────
 
 function DecorTab({ game }: { game: Game }) {
+  const { t, extraText, speciesName } = useI18n();
   return (
     <div className="ft-list">
-      <div className="ft-list-note">
-        Dekorlar tankta <b>görünür</b> ve kalıcı bonus verir. Bazı balıklar onlarla sinerji kurar.
-      </div>
+      <div className="ft-list-note">{t("decorNote")}</div>
       {DECOR_ORDER.map((id) => {
         const decor = DECOR[id];
         const owned = game.state.decor.includes(id);
@@ -238,14 +240,14 @@ function DecorTab({ game }: { game: Game }) {
           <article key={id} className={`ft-card compact${owned ? " owned" : ""}`}>
             <span className="ft-emoji">{decor.emoji}</span>
             <div className="ft-card-main">
-              <header><b>{decor.name}</b></header>
-              <p>{decor.blurb}</p>
+              <header><b>{extraText(id, 0, decor.name)}</b></header>
+              <p>{extraText(id, 1, decor.blurb)}</p>
               <div className="ft-tags">
                 <i>
-                  {effect.kind === "globalMul" && `tüm üretim ${formatMultiplier(effect.mul)}`}
-                  {effect.kind === "coinValue" && `toplanan değer ${formatMultiplier(effect.mul)}`}
-                  {effect.kind === "speciesMul" && `${SPECIES[effect.species].name} ${formatMultiplier(effect.mul)}`}
-                  {effect.kind === "flag" && "özel etki"}
+                  {effect.kind === "globalMul" && t("allProduction", { value: formatMultiplier(effect.mul) })}
+                  {effect.kind === "coinValue" && t("collectedValue", { value: formatMultiplier(effect.mul) })}
+                  {effect.kind === "speciesMul" && `${speciesName(effect.species, SPECIES[effect.species].name)} ${formatMultiplier(effect.mul)}`}
+                  {effect.kind === "flag" && t("specialEffect")}
                 </i>
               </div>
             </div>
@@ -253,7 +255,7 @@ function DecorTab({ game }: { game: Game }) {
               disabled={owned || game.state.coins < decor.cost}>
               {owned ? <span>✓</span> : <>
                 <span>{formatNumber(decor.cost)}</span>
-                <small>YERLEŞTİR</small>
+                <small>{t("place")}</small>
               </>}
             </button>
           </article>
@@ -266,12 +268,11 @@ function DecorTab({ game }: { game: Game }) {
 // ── Synergies ────────────────────────────────────────────────────────────────
 
 function SynergyTab({ game }: { game: Game }) {
+  const { t, speciesName, extraText } = useI18n();
   const active = new Set(game.derived.activeSynergies);
   return (
     <div className="ft-list">
-      <div className="ft-list-note">
-        Asıl soru şu: <b>hangi balıkları aynı tankta tutarsan sistem kırılır?</b>
-      </div>
+      <div className="ft-list-note">{t("synergyNote")}</div>
       {SYNERGIES.map((synergy) => {
         const on = active.has(synergy.id);
         return (
@@ -279,22 +280,22 @@ function SynergyTab({ game }: { game: Game }) {
             <span className="ft-emoji">{synergy.emoji}</span>
             <div className="ft-card-main">
               <header>
-                <b>{synergy.name}</b>
-                {on && <span className="ft-owned live">AKTİF</span>}
+                <b>{extraText(synergy.id, 0, synergy.name)}</b>
+                {on && <span className="ft-owned live">{t("active")}</span>}
               </header>
-              <p>{synergy.blurb}</p>
+              <p>{extraText(synergy.id, 1, synergy.blurb)}</p>
               <div className="ft-tags">
                 {Object.entries(synergy.req.species ?? {}).map(([id, need]) => {
                   const have = game.fishCounts[id as SpeciesId] ?? 0;
                   return (
                     <i key={id} className={have >= (need ?? 0) ? "met" : ""}>
-                      {SPECIES[id as SpeciesId].name} {have}/{need}
+                      {speciesName(id as SpeciesId, SPECIES[id as SpeciesId].name)} {have}/{need}
                     </i>
                   );
                 })}
                 {(synergy.req.decor ?? []).map((id) => (
                   <i key={id} className={game.state.decor.includes(id) ? "met" : ""}>
-                    {DECOR[id].name}
+                    {extraText(id, 0, DECOR[id].name)}
                   </i>
                 ))}
               </div>
@@ -309,6 +310,7 @@ function SynergyTab({ game }: { game: Game }) {
 // ── Tank / prestige ──────────────────────────────────────────────────────────
 
 function TankTab({ game }: { game: Game }) {
+  const { t, tankText } = useI18n();
   const index = game.state.tankIndex;
   const tank = TANKS[index];
   const next = TANKS[index + 1];
@@ -319,8 +321,8 @@ function TankTab({ game }: { game: Game }) {
   return (
     <div className="ft-list">
       <section className="ft-prestige">
-        <h3>{tank.emoji} {tank.name}</h3>
-        <p>{tank.blurb}</p>
+        <h3>{tank.emoji} {tankText(tank.index, 0, tank.name)}</h3>
+        <p>{tankText(tank.index, 2, tank.blurb)}</p>
         {next ? (
           <>
             <div className="ft-progress">
@@ -331,36 +333,36 @@ function TankTab({ game }: { game: Game }) {
             </div>
             <div className="ft-prestige-next">
               <div>
-                <small>SONRAKİ</small>
-                <b>{next.emoji} {next.name}</b>
-                <span>{next.fishCap} balık kapasitesi</span>
+                <small>{t("next")}</small>
+                <b>{next.emoji} {tankText(next.index, 0, next.name)}</b>
+                <span>{t("fishCapacity", { count: next.fishCap })}</span>
               </div>
               <div>
-                <small>KAZANILACAK ÜN</small>
+                <small>{t("reputationGain")}</small>
                 <b className="rep">+{formatNumber(reward)}</b>
-                <span>kalıcı {formatMultiplier(reputationMultiplier(game.state.reputation + reward))}</span>
+                <span>{t("permanent", { value: formatMultiplier(reputationMultiplier(game.state.reputation + reward)) })}</span>
               </div>
             </div>
             <button className="ft-move" disabled={!can} onClick={() => game.moveTank()}>
-              {can ? "BÜYÜK TANKA TAŞIN" : `${formatNumber(tank.moveRequirement - game.state.runCoins)} para daha`}
+              {can ? t("move") : t("moneyMore", { value: formatNumber(tank.moveRequirement - game.state.runCoins) })}
             </button>
             <p className="ft-warn">
-              Taşınınca balıklar, yükseltmeler ve dekorlar satılır; <b>ün, açılan yemler ve türler kalır</b>.
+              {t("moveWarning")}
             </p>
           </>
         ) : (
-          <p className="ft-warn">Son tanktasın. Buradan sonrası sadece daha fazlası.</p>
+          <p className="ft-warn">{t("lastTank")}</p>
         )}
       </section>
 
       <section className="ft-group">
-        <h3>Tank Zinciri</h3>
-        {TANKS.map((t) => (
-          <article key={t.index} className={`ft-card compact${t.index === index ? " owned" : ""}${t.index > index ? " locked" : ""}`}>
-            <span className="ft-emoji">{t.emoji}</span>
+        <h3>{t("tankChain")}</h3>
+        {TANKS.map((tankItem) => (
+          <article key={tankItem.index} className={`ft-card compact${tankItem.index === index ? " owned" : ""}${tankItem.index > index ? " locked" : ""}`}>
+            <span className="ft-emoji">{tankItem.emoji}</span>
             <div className="ft-card-main">
-              <header><b>{t.name}</b><span className="ft-level">{t.fishCap} balık</span></header>
-              <p>{t.blurb}</p>
+              <header><b>{tankText(tankItem.index, 0, tankItem.name)}</b><span className="ft-level">{t("fishCount", { count: tankItem.fishCap })}</span></header>
+              <p>{tankText(tankItem.index, 2, tankItem.blurb)}</p>
             </div>
           </article>
         ))}
@@ -372,31 +374,25 @@ function TankTab({ game }: { game: Game }) {
 // ── Stats ────────────────────────────────────────────────────────────────────
 
 function StatsTab({ game }: { game: Game }) {
+  const { language, t, stageName } = useI18n();
   const s = game.state.stats;
   const stages = game.state.fish.reduce<Record<string, number>>((acc, f) => {
     const name = STAGES[f.stage]?.name ?? "Yavru";
     acc[name] = (acc[name] ?? 0) + 1;
     return acc;
   }, {});
-  const rows: [string, string][] = [
-    ["Toplam kazanç", formatNumber(game.state.allTimeCoins)],
-    ["Bu tankta", formatNumber(game.state.runCoins)],
-    ["Serpilen yem", formatNumber(s.pelletsDropped)],
-    ["Yenen yem", formatNumber(s.pelletsEaten)],
-    ["İsabet oranı", s.pelletsDropped > 0 ? formatPercent(s.pelletsEaten / s.pelletsDropped) : "—"],
-    ["En yüksek combo", formatNumber(s.bestCombo)],
-    ["Frenzy sayısı", formatNumber(s.frenzies)],
-    ["Kirpi patlaması", formatNumber(s.popCount)],
-    ["Kazı", formatNumber(s.digs)],
-    ["Avlanan balık", formatNumber(s.devoured)],
-    ["Nadir varyant", formatNumber(s.mutations)],
-    ["Oynama süresi", formatDuration(s.playTime)],
-    ["Toplam ün", formatNumber(game.state.allTimeReputation)],
-  ];
+  const labels = statLabels(language);
+  const values = [formatNumber(game.state.allTimeCoins), formatNumber(game.state.runCoins),
+    formatNumber(s.pelletsDropped), formatNumber(s.pelletsEaten),
+    s.pelletsDropped > 0 ? formatPercent(s.pelletsEaten / s.pelletsDropped) : "—",
+    formatNumber(s.bestCombo), formatNumber(s.frenzies), formatNumber(s.popCount), formatNumber(s.digs),
+    formatNumber(s.devoured), formatNumber(s.mutations), formatDuration(s.playTime, language),
+    formatNumber(game.state.allTimeReputation)];
+  const rows: [string, string][] = labels.map((label, index) => [label, values[index]]);
   return (
     <div className="ft-list">
       <section className="ft-group">
-        <h3>Kayıtlar</h3>
+        <h3>{t("records")}</h3>
         <div className="ft-stats">
           {rows.map(([label, value]) => (
             <div key={label}><small>{label}</small><b>{value}</b></div>
@@ -404,11 +400,11 @@ function StatsTab({ game }: { game: Game }) {
         </div>
       </section>
       <section className="ft-group">
-        <h3>Balık Kademeleri</h3>
+        <h3>{t("fishStages")}</h3>
         <div className="ft-stats">
-          {STAGES.map((stage) => (
+          {STAGES.map((stage, index) => (
             <div key={stage.name}>
-              <small>{stage.name} ({formatMultiplier(stage.mul)})</small>
+              <small>{stageName(index, stage.name)} ({formatMultiplier(stage.mul)})</small>
               <b>{stages[stage.name] ?? 0}</b>
             </div>
           ))}

@@ -76,6 +76,7 @@ export const SPECIES: Record<SpeciesId, Species> = {
     senseRadius: 1.6,
     swimSpeed: 0.22,
     length: 0.5,
+    visualScale: 1.55,
     depthBias: 0.02,
     floorDweller: true,
     abilities: [{ kind: "cleaner", rate: 0.02 }],
@@ -95,6 +96,7 @@ export const SPECIES: Record<SpeciesId, Species> = {
     senseRadius: 2.4,
     swimSpeed: 0.85,
     length: 0.45,
+    visualScale: 1.65,
     depthBias: 0.12,
     floorDweller: true,
     abilities: [
@@ -172,6 +174,7 @@ export const SPECIES: Record<SpeciesId, Species> = {
     senseRadius: 2.2,
     swimSpeed: 0.75,
     length: 0.7,
+    visualScale: 1.35,
     depthBias: 0.02,
     floorDweller: true,
     abilities: [

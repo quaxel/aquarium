@@ -63,8 +63,6 @@ export function createInitialState(): GameState {
       pelletsDropped: 0, pelletsEaten: 0, coinsCollected: 0, frenzies: 0,
       bestCombo: 0, popCount: 0, devoured: 0, digs: 0, mutations: 0, playTime: 0,
     },
-    cpsEstimate: 0,
-    lastSeen: Date.now(),
     runStart: Date.now(),
   };
 }
@@ -118,7 +116,6 @@ export function computeDerived(
   const filterLevel = lvl(state, "filter");
   const breedLevel = lvl(state, "breeding");
   const bubbleLevel = lvl(state, "bubbleCollector");
-  const offlineLevel = lvl(state, "offlineBucket");
   // Muck is the tax on careless feeding: it never stops production outright, but at
   // full strength it takes more than half of it.
   const dirtPenalty = state.dirt * 0.45 * (flags.has("calmWater") ? 0.55 : 1);
@@ -149,8 +146,6 @@ export function computeDerived(
     comboRamp: 1 + lvl(state, "comboRamp") * 0.2,
     frenzyLength: 20 + lvl(state, "frenzyLength") * 5,
     frenzyPower: 6 * (1 + lvl(state, "frenzyPower") * 0.35),
-    offlineHours: 2 + offlineLevel * 2,
-    offlineEfficiency: 0.4 + offlineLevel * 0.08,
     reputationMul: reputationMultiplier(state.reputation),
     dirtPenalty,
     speciesMul,
@@ -236,7 +231,6 @@ export class Game {
   pendingRemovals: SpeciesId[] = [];
   /** Set by the world after a tank move so it can rebuild from scratch. */
   rebuildRequested = false;
-  offlineReport: { seconds: number; coins: number } | null = null;
 
   private listeners = new Set<() => void>();
   private version = 0;
@@ -578,7 +572,6 @@ export class Game {
   // ── Persistence ────────────────────────────────────────────────────────────
   save() {
     if (typeof localStorage === "undefined") return;
-    this.state.lastSeen = Date.now();
     try {
       localStorage.setItem(SAVE_KEY, JSON.stringify(this.state));
     } catch {
@@ -591,38 +584,20 @@ export class Game {
     try {
       const raw = localStorage.getItem(SAVE_KEY);
       if (!raw) return new Game();
-      const parsed = JSON.parse(raw) as GameState;
+      const parsed = JSON.parse(raw) as GameState & { cpsEstimate?: number; lastSeen?: number };
       if (parsed.version !== SAVE_VERSION) return new Game();
+      // Strip fields and purchases left by saves created before offline income was removed.
+      delete parsed.cpsEstimate;
+      delete parsed.lastSeen;
       const merged: GameState = { ...createInitialState(), ...parsed };
       merged.stats = { ...createInitialState().stats, ...parsed.stats };
-      const game = new Game(merged);
-      game.grantOffline();
-      return game;
+      merged.upgrades = Object.fromEntries(
+        Object.entries(merged.upgrades).filter(([id]) => id in UPGRADES),
+      ) as GameState["upgrades"];
+      return new Game(merged);
     } catch {
       return new Game();
     }
-  }
-
-  /** Pays out a fraction of the recent earning rate for the time the tab was shut. */
-  grantOffline() {
-    const seconds = Math.max(0, (Date.now() - this.state.lastSeen) / 1000);
-    this.grantIdle(seconds);
-  }
-
-  /**
-   * The same payout for time the tab spent open but frozen. Browsers suspend
-   * requestAnimationFrame in background tabs, so without this a player who leaves
-   * the page open in another window earns nothing at all — the worst of both worlds.
-   */
-  grantIdle(seconds: number) {
-    if (seconds < 60 || this.state.cpsEstimate <= 0) return;
-    const capped = Math.min(seconds, this.derived.offlineHours * 3600);
-    const coins = capped * this.state.cpsEstimate * this.derived.offlineEfficiency;
-    this.state.lastSeen = Date.now();
-    if (coins < 1) return;
-    this.earn(coins);
-    this.offlineReport = { seconds: capped, coins };
-    this.touch();
   }
 
   reset() {
@@ -635,7 +610,6 @@ export class Game {
     this.pendingRemovals = [];
     this.rebuildRequested = true;
     this.log = [];
-    this.offlineReport = null;
     this.live = {
       combo: 0, comboMul: 1, comboProgress: 0, frenzy: 0, frenzyLeft: 0, frenzyCooldown: 0,
       cps: 0, pellets: 0, pickups: 0, fishAlive: 0, shockActive: false,

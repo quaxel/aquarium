@@ -71,8 +71,12 @@ const fishVertex = `
     // giving the flat pixel plane a little depth without replacing the atlas.
     float across = uv.x * 2.0 - 1.0;
     float belly = 1.0 - across * across;
-    p.z += belly * uTurn * 0.14;
-    p.x += across * abs(uTurn) * 0.018;
+    float turnAmount = clamp(abs(uTurn), 0.0, 1.0);
+    // Compress the silhouette while turning: the fish briefly presents its
+    // shoulder instead of behaving like a full-width paper card.
+    p.x *= 1.0 - turnAmount * 0.46;
+    p.z += belly * uTurn * 0.72;
+    p.x += across * abs(uTurn) * 0.055;
     gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
   }
 `;
@@ -88,6 +92,7 @@ const fishFragment = `
   uniform vec2 uRepeat;
   uniform vec3 uWater;
   uniform vec3 uTint;
+  uniform float uTurn;
   varying vec2 vUv;
   varying vec2 vLocalUv;
   void main() {
@@ -135,6 +140,13 @@ const fishFragment = `
     c.rgb = mix(c.rgb, uWater, far * .32);
     c.rgb *= mix(1.02, .84, far);
     c.rgb = mix(c.rgb, c.rgb * vec3(.72, .88, .6), uDirt * .55);
+    // A small pixel-clustered light/shadow pass sells the fake volume while the
+    // fish is presenting its side during a turn.
+    float turnAmount = clamp(abs(uTurn), 0.0, 1.0);
+    float side = abs(vLocalUv.x * 2.0 - 1.0);
+    float bevel = smoothstep(.18, .92, side) * turnAmount;
+    c.rgb *= 1.0 - bevel * .3;
+    c.rgb += vec3(.1, .065, .025) * (1.0 - side) * turnAmount;
     // A bite flashes the whole body white for a beat — the feedback that tells you
     // which fish just earned you something.
     c.rgb = mix(c.rgb, vec3(1.0), uFlash * .7);
@@ -707,16 +719,18 @@ export class TankScene {
           float width = mix(.025, spread * widthPulse, down);
           float edge = abs(uv.x - center) / width;
 
-          // A graded cone sampled on a coarse grid: softly layered like the old
-          // painted rays, but every transition remains a visible pixel cluster.
+          // Keep the original painted, stepped cone, but use finer steps so it
+          // reads as a light beam before it reads as pixel art.
           float body = 1.0 - smoothstep(.16, 1.0, edge);
-          body = floor(body * 5.0) / 5.0;
+          body = floor(body * 8.0) / 8.0;
           float reach = 1.0 - smoothstep(.5, .84, down);
           float pulse = .76 + .24 * sin(uTime * (.4 + speed * .35) + phase);
           return body * reach * pulse;
         }
         void main() {
-          vec2 grid = vec2(160.0, 90.0);
+          // This is finer than the original 160×90 grid, while retaining the
+          // slight texture that makes the rays fit the rest of the aquarium.
+          vec2 grid = vec2(224.0, 126.0);
           vec2 uv = (floor(vUv * grid) + .5) / grid;
           // Preserve the original fan angles, but vary source spacing, width,
           // brightness and phase so the left and right halves do not mirror.
@@ -730,11 +744,11 @@ export class TankScene {
 
           float down = 1.0 - uv.y;
           float topGlow = 1.0 - smoothstep(0.0, .22, down);
-          vec2 pixel = floor(uv * grid);
-          float grain = .86 + hash(pixel + floor(uTime * .7)) * .14;
-          float strength = beams * grain * (.52 + topGlow * .18 + uHeat * .32);
+          vec2 cell = floor(uv * grid);
+          float grain = .86 + hash(cell + floor(uTime * .7)) * .14;
+          float strength = beams * grain * (.38 + topGlow * .13 + uHeat * .22);
           vec3 lightColor = mix(uTint, vec3(1.0), .7);
-          gl_FragColor = vec4(lightColor * strength, min(.78, strength * .82));
+          gl_FragColor = vec4(lightColor * strength, min(.62, strength * .7));
         }`,
     });
     this.rayMesh = new THREE.Mesh(new THREE.PlaneGeometry(18, 10.2), this.rayMaterial);
@@ -1191,19 +1205,20 @@ export class TankScene {
       mesh.position.set(f.x, f.y, 0);
       // Depth still controls layering and haze, but must not change a fish's
       // apparent size while it swims through the tank.
-      const visualScale = f.size * fade;
+      const visualScale = f.size * (def.visualScale ?? 1) * fade;
       const targetX = f.facing * visualScale;
       mesh.scale.x += (targetX - mesh.scale.x) * Math.min(1, dt * 9);
       mesh.scale.y = visualScale * (1 + Math.sin(this.elapsed * 3 + f.phase) * 0.014);
       // Nose follows the swim direction; mirrored fish need the pitch mirrored too.
       const pitch = Math.sin(f.heading) * 0.42 * f.facing;
-      mesh.rotation.z += (pitch - mesh.rotation.z) * Math.min(1, dt * 3.4);
+      mesh.rotation.z += (pitch - mesh.rotation.z) * Math.min(1, dt * 6.2);
 
       const u = mesh.material.uniforms;
       u.uTime.value = this.elapsed;
       u.uBeat.value = f.beat;
       u.uEffort.value = 0.3 + Math.min(f.thrust, 1.2) * 0.95;
-      u.uTurn.value = mesh.rotation.z;
+      const turnDelta = targetX - mesh.scale.x;
+      u.uTurn.value = THREE.MathUtils.clamp(turnDelta / Math.max(visualScale, 0.001) * 2.4, -1, 1);
       u.uFar.value = 0;
       u.uFlash.value = f.flash;
       u.uDirt.value = dirt;
@@ -1289,10 +1304,11 @@ export class TankScene {
       if (p.kind === "coin") {
         if (coinN >= this.coins.capacity) continue;
         // Horizontal foreshortening is authored directly into all seven frames;
-        // runtime scaling stays uniform so the pixel art is never distorted.
+        // runtime scaling and rotation stay neutral so the pixel art is never
+        // distorted by a second, conflicting spin animation.
         const frame = Math.floor(p.spin * 2.2) % 7;
         this.dummy.position.set(p.x, p.y, p.z);
-        this.dummy.rotation.z = Math.sin(p.spin * 0.45) * 0.12;
+        this.dummy.rotation.z = 0;
         const pop = Math.min(1, p.age * 6);
         this.dummy.scale.setScalar(0.2 * pop);
         this.dummy.updateMatrix();

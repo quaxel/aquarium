@@ -8,6 +8,9 @@ import type { Ability, FishSave, FoodId, SpeciesId } from "./types";
 // reads `game.live`, and the two never argue about who owns the truth.
 
 let nextId = 1;
+const FISH_TURN_COOLDOWN = 3;
+/** Currency pickups rest on the same horizontal plane as the fish shadows. */
+const PICKUP_SHADOW_LEVEL = 0.42;
 
 export type FishEntity = {
   id: number;
@@ -20,6 +23,7 @@ export type FishEntity = {
   heading: number;
   speed: number;
   facing: number;
+  nextTurnAt: number;
   beat: number;
   thrust: number;
   burstAt: number;
@@ -109,7 +113,7 @@ export type Bounds = { halfWidth: number; top: number; bottom: number };
 /**
  * Active play is a bonus, not the economy. At ×16 the combo alone outweighed a full
  * tier of species and every other decision in the game rounded to noise next to
- * "click faster"; the genre keeps the active-vs-idle gap in the low single digits.
+ * "click faster"; the genre keeps the active-vs-automatic gap in the low single digits.
  */
 const COMBO_TIERS = [
   { at: 0, mul: 1 },
@@ -238,6 +242,7 @@ export class World {
       heading: Math.random() < 0.5 ? 0 : Math.PI,
       speed: 0,
       facing: 1,
+      nextTurnAt: 0,
       beat: phase,
       thrust: 0.5,
       burstAt: 0,
@@ -515,8 +520,9 @@ export class World {
       p.vx *= Math.pow(0.6, dt);
       p.x += p.vx * dt;
       p.y += p.vy * dt;
-      if (p.y <= this.bounds.bottom - 0.35) {
-        p.y = this.bounds.bottom - 0.35;
+      const shadowLevel = this.bounds.bottom - PICKUP_SHADOW_LEVEL;
+      if (p.y <= shadowLevel) {
+        p.y = shadowLevel;
         p.settled = 0.001;
         p.vx = 0; p.vy = 0;
       }
@@ -601,7 +607,7 @@ export class World {
       const wanted = Math.atan2(steerY, steerX);
       let off = wanted - f.heading;
       off = Math.atan2(Math.sin(off), Math.cos(off));
-      const turnRate = (2.9 - Math.min(def.length, 3) * 0.4) * (1 + urgency * 0.35);
+      const turnRate = (4.5 - Math.min(def.length, 3) * 0.55) * (1 + urgency * 0.45);
       const agility = turnRate * (1.25 - 0.5 * Math.min(f.speed / (def.swimSpeed || 1), 1));
       f.heading += Math.max(-agility * dt, Math.min(agility * dt, off));
 
@@ -632,7 +638,15 @@ export class World {
       f.y = Math.max(bounds.bottom - 0.6, Math.min(bounds.top + 0.3, f.y));
 
       f.beat += dt * (2.2 + 8.4 * Math.min(f.speed / (def.swimSpeed || 1), 1.6));
-      if (Math.abs(Math.cos(f.heading)) > 0.4) f.facing = Math.cos(f.heading) >= 0 ? 1 : -1;
+      const horizontalFacing = Math.cos(f.heading) >= 0 ? 1 : -1;
+      if (
+        Math.abs(Math.cos(f.heading)) > 0.4
+        && horizontalFacing !== f.facing
+        && this.elapsed >= f.nextTurnAt
+      ) {
+        f.facing = horizontalFacing;
+        f.nextTurnAt = this.elapsed + FISH_TURN_COOLDOWN;
+      }
       f.targetDepth = def.floorDweller
         ? 0.12
         : Math.max(0.04, Math.min(0.98, def.depthBias + Math.sin(this.elapsed * 0.19 + f.phase) * 0.32));
@@ -984,14 +998,18 @@ export class World {
 
   // ── Pickups ────────────────────────────────────────────────────────────────
   spawnPickup(x: number, y: number, value: number, kind: PropKey): Pickup {
+    // Coins still pop up out of a fish, but now fan out through a wide upward arc
+    // instead of stacking into a single vertical stream.
+    const launchAngle = Math.PI / 2 + rand(-0.95, 0.95);
+    const launchSpeed = rand(1.2, 2.25);
     const pickup: Pickup = {
       id: nextId++,
       kind,
       value,
       x, y,
       z: rand(-0.2, 0.2),
-      vx: rand(-0.5, 0.5),
-      vy: rand(0.8, 1.8),
+      vx: Math.cos(launchAngle) * launchSpeed,
+      vy: Math.sin(launchAngle) * launchSpeed,
       age: 0,
       spin: rand(0, 6.28),
       claim: 0,
@@ -1019,7 +1037,18 @@ export class World {
       p.vx *= Math.pow(0.25, dt);
       p.x += p.vx * dt;
       p.y += p.vy * dt;
-      if (p.y < this.bounds.bottom - 0.3) { p.y = this.bounds.bottom - 0.3; p.vy = 0; }
+      const shadowLevel = this.bounds.bottom - PICKUP_SHADOW_LEVEL;
+      if (p.y < shadowLevel) { p.y = shadowLevel; p.vy = 0; }
+
+      // Direct contact is always enough to collect a pickup. The magnet upgrade
+      // remains valuable because it pulls coins in from much farther away.
+      if (this.pointerInside) {
+        const dx = this.pointerX - p.x, dy = this.pointerY - p.y;
+        if (dx * dx + dy * dy < 0.36 * 0.36) {
+          this.collect(p, 1 + d.freshBonus, true);
+          continue;
+        }
+      }
 
       if (d.magnetRadius > 0 && this.pointerInside) {
         const dx = this.pointerX - p.x, dy = this.pointerY - p.y;
@@ -1137,9 +1166,7 @@ export class World {
     const game = this.game;
     this.earnWindow += dt;
     if (this.earnWindow >= 1) {
-      // Exponential average so the offline payout is not decided by one lucky pop.
       const instant = this.earnAccum / this.earnWindow;
-      game.state.cpsEstimate = game.state.cpsEstimate * 0.82 + instant * 0.18;
       game.live.cps = instant;
       this.earnAccum = 0;
       this.earnWindow = 0;

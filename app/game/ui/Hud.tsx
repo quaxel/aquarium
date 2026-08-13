@@ -1,8 +1,9 @@
 "use client";
 
 import { FOODS, FOOD_ORDER, TANKS } from "../content";
-import { formatDuration, formatMultiplier, formatNumber, formatRate } from "../format";
+import { formatMultiplier, formatNumber, formatRate } from "../format";
 import type { Game } from "../game";
+import { LANGUAGE_OPTIONS, useI18n } from "../i18n";
 
 export function HudBar({
   game, paused, onTogglePause, onReset, onToggleDebug, debugOpen,
@@ -14,46 +15,61 @@ export function HudBar({
   onToggleDebug: () => void;
   debugOpen: boolean;
 }) {
+  const { language, setLanguage, t, tankText } = useI18n();
   const tank = TANKS[Math.min(game.state.tankIndex, TANKS.length - 1)];
-  const fish = game.live.fishAlive;
-  const full = fish >= game.derived.fishCap;
   return (
     <header className="ft-hud">
       <div className="ft-brand">
         <span className="ft-brand-mark">🐟</span>
         <div>
           <strong>FISH TANK EMPIRE</strong>
-          <small>{tank.emoji} {tank.short}</small>
+          <small>{tank.emoji} {tankText(tank.index, 1, tank.short)}</small>
         </div>
       </div>
 
       <div className="ft-readouts">
-        <Readout label="PARA" value={formatNumber(game.state.coins)} accent="coin" wide />
-        <Readout label="SANİYE" value={`${formatRate(game.live.cps)}/sn`} />
-        <Readout label="ÜN" value={formatNumber(game.state.reputation)} accent="rep"
-          hint={`Kalıcı çarpan ${formatMultiplier(game.derived.reputationMul)}`} />
-        <Readout label="BALIK" value={`${fish}/${game.derived.fishCap}`} accent={full ? "warn" : undefined} />
-        <Readout label="ÇARPAN" value={formatMultiplier(game.live.comboMul * game.derived.valueMul)} />
+        <Readout label={t("reputation")} value={formatNumber(game.state.reputation)} accent="rep"
+          hint={t("permanentMultiplier", { value: formatMultiplier(game.derived.reputationMul) })} />
       </div>
 
       <div className="ft-hud-actions">
-        <button onClick={onTogglePause} title="Duraklat">{paused ? "▶" : "❚❚"}</button>
+        <label className="ft-language" title={t("language")}>
+          <span>🌐</span>
+          <select value={language} onChange={(event) => setLanguage(event.target.value as typeof language)}>
+            {LANGUAGE_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.short}</option>)}
+          </select>
+        </label>
+        <button onClick={onTogglePause} title={t("pause")}>{paused ? "▶" : "❚❚"}</button>
         <button
           onClick={() => game.toggleAutoFeed()}
           className={game.state.autoFeedOn ? "on" : ""}
-          title="Otomatik yemlik"
+          title={t("autoFeeder")}
           disabled={game.derived.autoFeedRate <= 0}
         >🤖</button>
         <button
           onClick={() => game.toggleSharkDiet()}
           className={game.state.sharkDiet ? "on" : ""}
-          title="Köpekbalığı avlansın mı?"
+          title={t("sharkDiet")}
           disabled={(game.fishCounts.shark ?? 0) === 0}
         >🦈</button>
-        <button onClick={onToggleDebug} className={debugOpen ? "on" : ""} title="Debug paneli">🛠</button>
-        <button onClick={onReset} title="Sıfırla" className="danger">⟲</button>
+        <button onClick={onToggleDebug} className={debugOpen ? "on" : ""} title={t("debug")}>🛠</button>
+        <button onClick={onReset} title={t("reset")} className="danger">⟲</button>
       </div>
     </header>
+  );
+}
+
+export function GameHud({ game }: { game: Game }) {
+  const { t } = useI18n();
+  const fish = game.live.fishAlive;
+  const full = fish >= game.derived.fishCap;
+  return (
+    <section className="ft-game-hud" aria-label={t("gameStatus")}>
+      <Readout label={t("money")} value={formatNumber(game.state.coins)} accent="coin" wide />
+      <Readout label={t("second")} value={`${formatRate(game.live.cps)}${t("perSecondShort")}`} />
+      <Readout label={t("fish")} value={`${fish}/${game.derived.fishCap}`} accent={full ? "warn" : undefined} />
+      <Readout label={t("multiplier")} value={formatMultiplier(game.live.comboMul * game.derived.valueMul)} />
+    </section>
   );
 }
 
@@ -69,6 +85,7 @@ function Readout({ label, value, accent, hint, wide }: {
 }
 
 export function ComboMeter({ game }: { game: Game }) {
+  const { t } = useI18n();
   const live = game.live;
   const frenzy = live.frenzy > 0;
   const cooling = !frenzy && live.frenzyCooldown > 0;
@@ -82,8 +99,8 @@ export function ComboMeter({ game }: { game: Game }) {
           {frenzy
             ? `${live.frenzyLeft.toFixed(1)} sn · ${formatMultiplier(game.derived.frenzyPower)}`
             : cooling
-              ? `frenzy ${live.frenzyCooldown.toFixed(0)} sn sonra`
-              : `${Math.floor(live.combo)} combo`}
+              ? t("frenzyAfter", { seconds: live.frenzyCooldown.toFixed(0) })
+              : t("combo", { count: Math.floor(live.combo) })}
         </span>
       </div>
       <div className="ft-combo-track">
@@ -97,15 +114,15 @@ export function ComboMeter({ game }: { game: Game }) {
 }
 
 export function FoodBar({ game }: { game: Game }) {
+  const { t, foodName, foodBlurb } = useI18n();
   const baseline = game.foodCost("shrimpPellet") / (FOODS.shrimpPellet.cost || 1);
   return (
-    <div className="ft-foodbar" role="group" aria-label="Yem seçimi">
+    <div className="ft-foodbar" role="group" aria-label={t("foodChoice")}>
       {FOOD_ORDER.map((id) => {
         const food = FOODS[id];
         const owned = game.state.unlockedFoods.includes(id);
         const active = game.state.foodId === id;
-        const visible = owned || food.tier <= game.state.tankIndex + 1;
-        if (!visible) return null;
+        const tierAvailable = food.tier <= game.state.tankIndex + 1;
         const unitCost = food.cost * baseline;
         const affordable = owned ? true : game.state.coins >= food.unlockCost;
         return (
@@ -113,15 +130,15 @@ export function FoodBar({ game }: { game: Game }) {
             key={id}
             className={`ft-food${active ? " active" : ""}${owned ? "" : " locked"}`}
             onClick={() => game.buyFood(id)}
-            disabled={!owned && !affordable}
-            title={food.blurb}
+            disabled={!owned && (!affordable || !tierAvailable)}
+            title={foodBlurb(id, food.blurb)}
           >
             <span className="ft-food-emoji">{food.emoji}</span>
-            <span className="ft-food-name">{food.name}</span>
+            <span className="ft-food-name">{foodName(id, food.name)}</span>
             <span className="ft-food-cost">
               {owned
-                ? unitCost > 0 ? `${formatNumber(unitCost)}/adet` : "bedava"
-                : `🔓 ${formatNumber(food.unlockCost)}`}
+                ? unitCost > 0 ? `${formatNumber(unitCost)}${t("each")}` : t("free")
+                : tierAvailable ? `🔓 ${formatNumber(food.unlockCost)}` : `🔒 TANK ${food.tier + 1}`}
             </span>
           </button>
         );
@@ -131,14 +148,15 @@ export function FoodBar({ game }: { game: Game }) {
 }
 
 export function TankStatus({ game }: { game: Game }) {
+  const { t } = useI18n();
   const dirt = game.state.dirt;
   return (
     <div className="ft-tankstatus">
-      <div className="ft-meter" title={`Kirlilik: üretim ${formatMultiplier(1 - game.derived.dirtPenalty)}`}>
-        <small>SU</small>
+      <div className="ft-meter" title={t("dirtHint", { value: formatMultiplier(1 - game.derived.dirtPenalty) })}>
+        <small>{t("water")}</small>
         <div className="ft-meter-track"><i className="dirt" style={{ width: `${dirt * 100}%` }} /></div>
       </div>
-      <span>{game.live.pellets} yem · {game.live.pickups} para</span>
+      <span>{t("pelletsCoins", { pellets: game.live.pellets, coins: game.live.pickups })}</span>
     </div>
   );
 }
@@ -155,26 +173,6 @@ export function Toasts({ game }: { game: Game }) {
           {entry.body && <span>{entry.body}</span>}
         </div>
       ))}
-    </div>
-  );
-}
-
-export function OfflineReport({
-  report, onClose,
-}: {
-  report: { seconds: number; coins: number };
-  onClose: () => void;
-}) {
-  return (
-    <div className="ft-modal-backdrop" onClick={onClose}>
-      <div className="ft-modal" onClick={(e) => e.stopPropagation()}>
-        <h2>🌙 Sen yokken</h2>
-        <p>
-          Otomatik yemlik <b>{formatDuration(report.seconds)}</b> boyunca çalıştı ve
-          {" "}<b>{formatNumber(report.coins)}</b> para biriktirdi.
-        </p>
-        <button onClick={onClose}>TANKA DÖN</button>
-      </div>
     </div>
   );
 }

@@ -173,13 +173,6 @@ export const UPGRADES: Record<UpgradeId, Upgrade> = {
     blurb: "Çürüyen yemin bıraktığı kiri sürekli temizler.",
     detail: (l) => `Saniyede %${((l + 1) * 1.2).toFixed(1)} kir temizler`,
   },
-  offlineBucket: {
-    id: "offlineBucket", name: "Yem Deposu", emoji: "🪣", category: "auto",
-    share: 0.016, costGrowth: 2.2, maxLevel: 6, tier: 3,
-    blurb: "Sen yokken de yemlik çalışsın diye dolu bir depo.",
-    detail: (l) => `${(2 + (l + 1) * 2)} saate kadar çevrimdışı gelir (%${40 + (l + 1) * 8} verim)`,
-  },
-
   // ── Çılgınlık ──────────────────────────────────────────────────────────────
   comboGrace: {
     id: "comboGrace", name: "Combo Toleransı", emoji: "⏳", category: "frenzy",
@@ -212,7 +205,7 @@ export const UPGRADE_ORDER: UpgradeId[] = [
   "freshCatch", "coinMagnet", "heater", "growthHormone", "filter", "goldenPoop",
   "glassPolish", "autoFeeder", "feederRate", "bubbleCollector", "comboGrace",
   "airStone", "scatterFeed", "feederSpread", "comboRamp", "frenzyLength",
-  "offlineBucket", "frenzyPower", "breeding", "smartFeeder",
+  "frenzyPower", "breeding", "smartFeeder",
 ];
 
 export const CATEGORY_LABELS: Record<Upgrade["category"], string> = {
