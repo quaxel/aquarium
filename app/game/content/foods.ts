@@ -5,9 +5,9 @@ import type { Food, FoodId } from "../types";
 // premium foods a decision instead of a strict upgrade.
 //
 // `cost` is NOT an absolute coin price: it is a multiple of the tank's current
-// pellet baseline (the value of the best fish you own). Prices therefore keep pace
-// with the economy at every scale, and a worm never becomes free just because you
-// moved into the space aquarium.
+// pellet baseline (the average value of a bite at the fish's current growth,
+// breeding and permanent-bonus levels). Prices therefore keep pace with the
+// economy at every scale without punishing a mixed roster for owning one star fish.
 
 export const FOODS: Record<FoodId, Food> = {
   flake: {
@@ -44,7 +44,7 @@ export const FOODS: Record<FoodId, Food> = {
     id: "worm",
     name: "Solucan",
     emoji: "🪱",
-    cost: 1.0,
+    cost: 2.4,
     unlockCost: 3e5,
     tier: 2,
     valueMul: 2.1,
@@ -59,7 +59,7 @@ export const FOODS: Record<FoodId, Food> = {
     id: "starFood",
     name: "Yıldız Yemi",
     emoji: "⭐",
-    cost: 1.6,
+    cost: 2.6,
     unlockCost: 6e6,
     tier: 3,
     valueMul: 3.2,
@@ -74,7 +74,7 @@ export const FOODS: Record<FoodId, Food> = {
     id: "explosive",
     name: "Patlayıcı Yem",
     emoji: "💥",
-    cost: 1.4,
+    cost: 3.4,
     unlockCost: 1.5e8,
     tier: 4,
     valueMul: 2.6,
@@ -83,13 +83,13 @@ export const FOODS: Record<FoodId, Food> = {
     effect: "explode",
     color: "#ff5722",
     glow: "#ffb199",
-    blurb: "Yenince 5 yem daha fırlatır. Zincirleme reaksiyonun kaynağı.",
+    blurb: "Yenince 3 yem daha fırlatır. Zincirleme reaksiyonun kaynağı.",
   },
   rainbow: {
     id: "rainbow",
     name: "Gökkuşağı Peleti",
     emoji: "🌈",
-    cost: 2.0,
+    cost: 3.2,
     unlockCost: 3e9,
     tier: 5,
     valueMul: 3.6,
@@ -104,7 +104,7 @@ export const FOODS: Record<FoodId, Food> = {
     id: "mutant",
     name: "Mutant Yem",
     emoji: "☢️",
-    cost: 3.6,
+    cost: 5.8,
     unlockCost: 6e10,
     tier: 6,
     valueMul: 6.5,
@@ -119,11 +119,11 @@ export const FOODS: Record<FoodId, Food> = {
     id: "krill",
     name: "Altın Krill",
     emoji: "✨",
-    cost: 4.5,
+    cost: 5.4,
     unlockCost: 1.5e12,
     tier: 7,
     // The guaranteed nugget is already a ×9 on top, so the base multiplier stays low.
-    valueMul: 1.2,
+    valueMul: 0.85,
     xpMul: 2.5,
     comboBonus: 2,
     effect: "gold",

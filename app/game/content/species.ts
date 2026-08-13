@@ -157,8 +157,8 @@ export const SPECIES: Record<SpeciesId, Species> = {
     swimSpeed: 0.62,
     length: 0.95,
     depthBias: 0.45,
-    abilities: [{ kind: "inflate", bites: 12, popMul: 3.4 }],
-    blurb: "Yedikçe şişer. 12 lokmada PATLAR ve biriktirdiğinin 3.4 katını saçar.",
+    abilities: [{ kind: "inflate", bites: 12, popMul: 2 }],
+    blurb: "Yedikçe şişer. 12 lokmada PATLAR ve biriktirdiğinin 2 katını saçar.",
     art: { shape: "round", palette: ["#6b5a12", "#dcc74e", "#fff5ad"], accent: "#3a3320", pattern: "spots" },
   },
 

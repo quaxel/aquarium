@@ -1364,12 +1364,15 @@ export class TankScene {
   private syncBubbles() {
     const pool = this.bubbles;
     const [cu, cv] = this.cellFor("dot");
+    // The first tanks zoom the stage in to fill the glass. Keep that zoom from
+    // enlarging air bubbles as aggressively as fish and scenery.
+    const zoomCompensation = Math.min(1, 1 / this.scale);
     let n = 0;
     for (const b of this.world.bubbles) {
       if (n >= pool.capacity) break;
       this.dummy.position.set(b.x + Math.sin(this.elapsed * 1.5 + b.drift) * 0.06, b.y, b.z);
       this.dummy.rotation.z = 0;
-      this.dummy.scale.setScalar(b.scale * (b.carry > 0 ? 0.34 : 0.16));
+      this.dummy.scale.setScalar(b.scale * (b.carry > 0 ? 0.34 : 0.16) * zoomCompensation);
       this.dummy.updateMatrix();
       pool.mesh.setMatrixAt(n, this.dummy.matrix);
       if (b.carry > 0) pool.color.setXYZ(n, 1, 0.85, 0.3);

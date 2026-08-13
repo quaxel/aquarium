@@ -1,7 +1,7 @@
 import {
   DECOR, FOODS, REPUTATION_UNLOCKS, SPECIES, SPECIES_ORDER, STAGES, SYNERGIES, TANKS,
   UPGRADES, reputationFor, reputationMultiplier, schoolCost, schoolMultiplier,
-  speciesCost, stageFor, tankBar, upgradeCost,
+  speciesCost, stageFor, tankBar, tankPacing, upgradeCost,
 } from "./content";
 import type {
   Derived, DecorId, FishSave, FoodId, GameState, SpeciesId, SynergyFlag, UpgradeId,
@@ -157,19 +157,25 @@ export function computeDerived(
 }
 
 /**
- * The yardstick premium food prices are quoted against: the raw output of the best
- * fish in the tank. Tying prices to this keeps a worm meaningful in the space
- * aquarium instead of rounding to free.
+ * The yardstick premium food prices are quoted against: the average current value
+ * of one bite in the tank. Growth, permanent fish bonuses, breeding and species
+ * synergies all count. Using the average keeps food affordable in a mixed roster;
+ * using the strongest fish made every bite eaten by a weaker fish a guaranteed loss.
  */
-export function pelletBaseline(state: GameState, fishCounts: Partial<Record<SpeciesId, number>>): number {
-  let best = 3;
-  for (const id of SPECIES_ORDER) {
-    if ((fishCounts[id] ?? 0) === 0) continue;
-    // The breeding level counts: without it, food prices stop tracking income the
-    // moment the player starts levelling and every premium pellet rounds to free.
-    best = Math.max(best, SPECIES[id].baseValue * schoolMultiplier(state.schoolLevels[id] ?? 0));
+export function pelletBaseline(
+  state: GameState,
+  speciesMul: Partial<Record<SpeciesId, number>> = {},
+): number {
+  if (!state.fish.length) return 3;
+  let total = 0;
+  for (const fish of state.fish) {
+    total += SPECIES[fish.species].baseValue
+      * STAGES[stageFor(fish.xp)].mul
+      * fish.bonus
+      * schoolMultiplier(state.schoolLevels[fish.species] ?? 0)
+      * (speciesMul[fish.species] ?? 1);
   }
-  return best;
+  return Math.max(3, total / state.fish.length);
 }
 
 /**
@@ -311,7 +317,7 @@ export class Game {
   foodCost(id: FoodId = this.state.foodId): number {
     const food = FOODS[id];
     if (food.cost <= 0) return 0;
-    return food.cost * pelletBaseline(this.state, this.fishCounts) * this.derived.valueMul;
+    return food.cost * pelletBaseline(this.state, this.derived.speciesMul) * this.derived.valueMul;
   }
 
   // ── Purchases ──────────────────────────────────────────────────────────────
@@ -471,7 +477,9 @@ export class Game {
   }
 
   moveTankReward(): number {
-    return reputationFor(this.state.runCoins);
+    // Pacing raises the late-game bar without minting extra reputation that would
+    // immediately erase the added duration from the following tank.
+    return reputationFor(this.state.runCoins / tankPacing(this.state.tankIndex));
   }
 
   /**

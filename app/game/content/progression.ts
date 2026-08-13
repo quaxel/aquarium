@@ -4,21 +4,34 @@ import type { Decor, DecorId, SpeciesId, Synergy, Tank } from "../types";
 // whole operation into a bigger one, which is the same maths dressed as a promotion
 // and gives the player a picture of where they are instead of a counter.
 
-/**
- * The one knob that sets the length of the whole game. Each tank multiplies income
- * by roughly this much on its own — two species rungs (×16), a bigger cap (×1.4)
- * and the reputation the last move paid for (×8) — so the bar to leave it has to
- * climb by the same factor or the runs get shorter every time.
- */
+/** The geometric backbone of the tank ladder. */
 const TANK_BASE = 25000;
 const TANK_RATIO = 200;
+
+/**
+ * Late-game income grows faster than the geometric backbone because large rosters,
+ * stacked synergies, upgrades and breeding levels compound during the extra time a
+ * run is given. These are progression-bar multipliers, not time multipliers: values
+ * in the thousands are needed to turn a two-minute late run into seven minutes.
+ */
+const TANK_PACING: Partial<Record<number, number>> = {
+  3: 3e3, // Restaurant
+  4: 3e4, // Public aquarium
+  5: 5e5, // Research center
+  6: 3e4, // Underwater habitat
+};
+
+export function tankPacing(index: number): number {
+  return TANK_PACING[Math.max(0, index)] ?? 1;
+}
 
 /**
  * The run's yardstick for a given tank. Unlike `moveRequirement` it stays finite on
  * the last tank, which has no bar left to clear.
  */
 export function tankBar(index: number): number {
-  return TANK_BASE * Math.pow(TANK_RATIO, Math.max(0, index));
+  const safeIndex = Math.max(0, index);
+  return TANK_BASE * Math.pow(TANK_RATIO, safeIndex) * tankPacing(safeIndex);
 }
 
 // Eight places, not one place with eight labels. Each tank paints its own water
@@ -154,7 +167,7 @@ export const TANKS: Tank[] = ([
   ...tank,
   background: PAINTED_BACKDROPS[index],
   // The last tank has nowhere to move on to.
-  moveRequirement: index === all.length - 1 ? Infinity : TANK_BASE * Math.pow(TANK_RATIO, index),
+  moveRequirement: index === all.length - 1 ? Infinity : tankBar(index),
 }));
 
 export const DECOR: Record<DecorId, Decor> = {
@@ -216,7 +229,7 @@ export const SYNERGIES: Synergy[] = [
   },
   {
     id: "clownHome", name: "Ev Sahibi", emoji: "🤡🪸",
-    blurb: "Palyaço balığı şakayığa yerleşti: üretimi ×2.6 ve durmadan pasif gelir.",
+    blurb: "Palyaço balığı şakayığa yerleşti: üretimi ×2.6.",
     req: { species: { clownfish: 1 }, decor: ["anemone"] },
     effects: [{ kind: "speciesMul", species: "clownfish", mul: 2.6 }],
   },

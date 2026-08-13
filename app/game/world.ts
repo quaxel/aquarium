@@ -129,6 +129,8 @@ const FRENZY_AT = 90;
  */
 const FRENZY_COOLDOWN = 25;
 const CURSOR_MAGNET_SPEED = 7;
+const EXPLOSION_PELLETS = 3;
+const DIG_REWARD_BITES = 10;
 
 export function comboMultiplier(combo: number): number {
   let mul = 1;
@@ -811,9 +813,9 @@ export class World {
   private applyFoodEffect(f: FishEntity, effect: (typeof FOODS)[FoodId]["effect"], pellet: Pellet) {
     switch (effect) {
       case "explode": {
-        // The chain reaction the design is built around: one bite feeds five more.
-        for (let i = 0; i < 5; i++) {
-          const a = (i / 5) * Math.PI * 2 + rand(-0.3, 0.3);
+        // Strong combo acceleration, but not enough free output to dominate every food.
+        for (let i = 0; i < EXPLOSION_PELLETS; i++) {
+          const a = (i / EXPLOSION_PELLETS) * Math.PI * 2 + rand(-0.3, 0.3);
           const p = this.spawnPellet(f.x + Math.cos(a) * 0.5, f.y + Math.sin(a) * 0.5, "flake");
           p.vx = Math.cos(a) * 2.4;
           p.vy = Math.sin(a) * 2.4 + 0.6;
@@ -962,7 +964,7 @@ export class World {
           for (let i = 0; i < digs; i++) {
             if (Math.random() > ability.luck * 0.85) continue;
             this.game.state.stats.digs++;
-            const value = fishValue(this.game, f.species, f.xp, f.bonus) * 26 * this.liveMultiplier;
+            const value = fishValue(this.game, f.species, f.xp, f.bonus) * DIG_REWARD_BITES * this.liveMultiplier;
             const kind: PropKey = Math.random() < 0.28 ? "chest" : Math.random() < 0.5 ? "pearl" : "gem";
             const pickup = this.spawnPickup(f.x + rand(-0.4, 0.4), this.bounds.bottom - 0.2, value * (kind === "chest" ? 3 : 1), kind);
             pickup.vy = 1.4;

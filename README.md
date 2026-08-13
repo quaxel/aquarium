@@ -57,7 +57,7 @@ bir şey yapar:
 | 🦐 Karides | Dibe düşen paraları toplar |
 | 🤡 Palyaço | Şakayıkla eşleşince pasif gelir |
 | 👼 Melek Balığı | Yavaş çiğner, lokması ağır |
-| 🐡 Kirpi | 12 lokmada şişip **PATLAR**, biriktirdiğinin 3.4 katını saçar |
+| 🐡 Kirpi | 12 lokmada şişip **PATLAR**, biriktirdiğinin 2 katını saçar |
 | 🦀 Yengeç | Kum kazar + dipten toplar |
 | 🥏 Vatoz | Kumu süpürüp gömülü sandık çıkarır |
 | ⚡ Yılan Balığı | 9 sn'de bir şok: menzildeki balıklar 5 sn ×3 |
@@ -81,11 +81,12 @@ kombinasyon var; panel sahip olmadan önce de şartı gösterir.
 ### Yemler de bir ilerleme hattı
 
 Normal yem sonsuza kadar bedava (tıklama hiç kurumasın diye). Üstündekiler adet
-başına para yakar ve fiyatları **tanktaki en iyi balığın üretimine oranlıdır** —
-böylece uzay akvaryumunda bir solucan bedavaya düşmez.
+başına para yakar ve fiyatları tanktaki balıkların **ortalama güncel lokma değerine**
+oranlıdır. Büyüme, sürü seviyesi, nadir varyant ve tür sinerjileri bu fiyata dahil;
+böylece yem geç oyunda bedavaya düşmez ve tek güçlü balık karma tankı cezalandırmaz.
 
 🟤 Normal · 🦐 Karides · 🪱 Solucan (suda ikiye bölünür) · ⭐ Yıldız (combo +4) ·
-💥 Patlayıcı (yenince 5 yem fırlatır → zincirleme reaksiyon) · 🌈 Gökkuşağı
+💥 Patlayıcı (yenince 3 yem fırlatır → zincirleme reaksiyon) · 🌈 Gökkuşağı
 (%12 kalıcı nadir varyant) · ☢️ Mutant (8 sn ×5 çılgınlık) · ✨ Altın Krill
 
 ### Kirli su
@@ -164,7 +165,7 @@ bir basamakta oturur:
 
 ```
 production(k) = 5.5 × 4^k          k = basamak, 0..14
-baseCost(k)   = production(k) × 45  → her basamakta 45 saniyelik geri ödeme
+baseCost(k)   = production(k) × 120 → saf üreticilerde ~120 saniyelik geri ödeme
 ```
 
 Sabit geri ödeme, oyunun her kademesinde satın almanın aynı hissettirmesini
@@ -186,7 +187,7 @@ dakikasında kuruyor ve geri kalanı bekleyerek geçiyordu. Sürü Seviyesi eksi
 Üstel maliyete karşı doğrusal gelir — türün üzerine kurulduğu tahterevalli budur;
 her sonraki alımın bir öncekinden biraz daha uzun sürmesini sağlayan şey odur.
 
-25 seviyede bir **×1.5 kilometre taşı** var. Saf doğrusal artış yüksek seviyede
+30 seviyede bir **×1.35 kilometre taşı** var. Saf doğrusal artış yüksek seviyede
 ölüyor (bir sonraki +%25 yüzdenin küsuratı kalırken fiyat hâlâ %15 tırmanıyor) ve
 run düz bir beklemeye dönüşüyor; kilometre taşları hem pisti canlı tutuyor hem de
 run'a türün istediği "hızlı alım tümseği" ritmini veriyor. Boyu hassas: ×2/20
@@ -223,19 +224,21 @@ const TANK_RATIO = 200;   // moveRequirement = TANK_BASE × TANK_RATIO^index
 
 Her tank geliri kendi başına ~156× artırıyor (×16 iki tür basamağı, ×1.5 kapasite,
 ×6.5 son taşınmanın ödediği ün). Eşik ×200 ile bunun biraz üstünde tutuluyor; o
-pay, her tankın bir öncekinden biraz **uzun** sürmesini sağlayan şey.
+pay, erken tankların bir öncekinden biraz **uzun** sürmesini sağlayan şey. Geç
+oyunda kadro, sinerji ve ün aynı anda hızlandığı için Restoran, Halka Açık,
+Araştırma ve Habitat eşikleri ayrıca sırasıyla `×3.000`, `×30.000`, `×500.000`,
+`×30.000` tempo katsayısı taşır. Bunlar süre çarpanı değildir: uzun run sırasında
+alınan yükseltme ve sürü seviyeleri farkı hızla kapattığı için eşik çok daha hızlı
+büyümek zorundadır. Ek eşik ün ödülüne dahil edilmez; aksi hâlde bir sonraki tankı
+yeniden kısaltır.
 
-### Ölçüm
+### Denge hedefi
 
-Kalibrasyon tarayıcıda hızlandırılmış simülasyonla yapıldı: saniyede 2 kez yem
-atan, hiç durmayan, hep en iyisini alan bir "süper oyuncu" modeli.
-
-| Tank geçişi | 0→1 | 1→2 | 2→3 | 3→4 | 4→5 | 5→6 | 6→7 |
-|---|---|---|---|---|---|---|---|
-| sim-dakika | 6.0 | 7.3 | 6.4 | 7.3 | 5.4 | 4.9 | 2.3 |
-
-Tam oyun ~40 simülasyon dakikası. Gerçek oyuncu bu tempoyu tutturamayacağı için
-pratikte birkaç saatlik bir oyun.
+Saf üretici balıklar yaklaşık 120 saniyede, yetenek ağırlıklı balıklar ise
+yetenekleri hesaba katıldığında yaklaşık 90–160 saniyede kendini öder. Premium
+yemlerin doğrudan net getirisi ortalama lokma başına `+0.4×`–`+2.25×` aralığında
+tutulur; mutasyon, rage ve combo gibi kalıcı veya zincirlenen etkiler bu yüzden
+doğrudan nakitte daha düşük marj taşır.
 
 Konsoldan kendin oynayabilirsin: `__tank.game` ve `__tank.world` açık.
 
