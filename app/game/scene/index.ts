@@ -1,437 +1,17 @@
 import * as THREE from "three";
-import { DECOR_ORDER, SPECIES, SPECIES_ORDER, TANKS } from "./content";
-import type { Game } from "./game";
-import { buildPropAtlas, type PropKey } from "./sprites";
-import type { World } from "./world";
-import type { DecorId, SpeciesId } from "./types";
+import { DECOR_ORDER, SPECIES, SPECIES_ORDER, TANKS } from "../content";
+import type { Game } from "../game";
+import { buildPropAtlas, type PropKey } from "../sprites";
+import type { DecorId, SpeciesId } from "../types";
+import type { World } from "../world";
+import { atlasSprite } from "./atlasSprite";
+import { DECOR_REGIONS, DECOR_SLOTS, FISH_ATLAS, MID_SIZE, PLANT_ATLAS } from "./constants";
+import { EntityPools } from "./pools";
+import { fishFragment, fishVertex, plantFragment, plantVertex, SCENERY_FRAGMENT } from "./shaders";
 
 // The renderer. It owns Three.js and nothing else: it reads the world's entity
-// arrays every frame and never writes to them. The water, caustics, god rays and
-// fish undulation are the shaders the ambient version of this project already had —
-// the game layer is the pooled instancing added on top.
-
-const MID_SIZE = { w: 1536, h: 1024 };
-const FISH_ATLAS = { w: 704, h: 480, cellW: 176, cellH: 120, cols: 4 };
-const PLANT_ATLAS = { cols: 3, rows: 2 };
-
-const DECOR_REGIONS: Record<DecorId, { x: number; y: number; w: number; h: number }> = {
-  anemone: { x: 520, y: 525, w: 430, h: 390 },
-  coral: { x: 45, y: 565, w: 430, h: 330 },
-  wreck: { x: 985, y: 175, w: 465, h: 315 },
-  helmet: { x: 42, y: 85, w: 420, h: 410 },
-  amphora: { x: 990, y: 585, w: 465, h: 320 },
-  chest: { x: 485, y: 180, w: 445, h: 315 },
-};
-
-/** Where each decoration sits, as a fraction of the swim box. */
-const DECOR_SLOTS: Record<DecorId, { x: number; y: number; scale: number; z: number }> = {
-  anemone: { x: -0.62, y: 0.06, scale: 0.9, z: -1.1 },
-  coral: { x: 0.58, y: 0.02, scale: 0.85, z: -0.9 },
-  wreck: { x: -0.18, y: 0.02, scale: 1.25, z: -1.6 },
-  helmet: { x: 0.86, y: 0.05, scale: 0.8, z: -0.7 },
-  amphora: { x: -0.88, y: 0.02, scale: 0.7, z: 0.3 },
-  chest: { x: 0.2, y: 0.01, scale: 0.9, z: 0.45 },
-};
-
-const fishVertex = `
-  uniform float uTime;
-  uniform float uPhase;
-  uniform float uBeat;
-  uniform float uEffort;
-  uniform float uTurn;
-  uniform vec2 uOffset;
-  uniform vec2 uRepeat;
-  varying vec2 vUv;
-  varying vec2 vLocalUv;
-  void main() {
-    vLocalUv = uv;
-    vUv = uOffset + uv * uRepeat;
-    vec3 p = position;
-    // Undulation travels head to tail and grows toward it, so the body throws the
-    // tail rather than the whole sprite wobbling. The motion is authored as a
-    // handful of pixel-art poses, then blended between adjacent poses so it keeps
-    // its stepped character without visibly stuttering.
-    float along = 1.0 - uv.x;
-    const float POSE_RATE = 7.0;
-    float pose = floor(uBeat * POSE_RATE) / POSE_RATE;
-    float poseNext = pose + 1.0 / POSE_RATE;
-    float poseBlend = smoothstep(0.12, 0.88, fract(uBeat * POSE_RATE));
-    float waveA = sin(pose - along * 3.6);
-    float waveB = sin(poseNext - along * 3.6);
-    float wave = mix(waveA, waveB, poseBlend);
-    p.y += wave * pow(along, 1.7) * 0.115 * uEffort;
-    float bodyPulseA = cos(pose) * 0.016 * uEffort;
-    float bodyPulseB = cos(poseNext) * 0.016 * uEffort;
-    p.x += mix(bodyPulseA, bodyPulseB, poseBlend);
-    float bobPose = floor((uTime * 1.6 + uPhase) * 6.0) / 6.0;
-    float bobNext = bobPose + 1.0 / 6.0;
-    float bobBlend = smoothstep(0.15, 0.85, fract((uTime * 1.6 + uPhase) * 6.0));
-    p.y += mix(sin(bobPose), sin(bobNext), bobBlend) * 0.012;
-    // Quick volume fake: bow the sprite around its centre as the fish turns,
-    // giving the flat pixel plane a little depth without replacing the atlas.
-    float across = uv.x * 2.0 - 1.0;
-    float belly = 1.0 - across * across;
-    float turnAmount = clamp(abs(uTurn), 0.0, 1.0);
-    // Compress the silhouette while turning: the fish briefly presents its
-    // shoulder instead of behaving like a full-width paper card.
-    p.x *= 1.0 - turnAmount * 0.46;
-    p.z += belly * uTurn * 0.72;
-    p.x += across * abs(uTurn) * 0.055;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
-  }
-`;
-
-const fishFragment = `
-  uniform sampler2D uMap;
-  uniform float uFar;
-  uniform float uFlash;
-  uniform float uDirt;
-  uniform float uGoldfish;
-  uniform float uBlink;
-  uniform vec2 uOffset;
-  uniform vec2 uRepeat;
-  uniform vec3 uWater;
-  uniform vec3 uTint;
-  uniform float uTurn;
-  varying vec2 vUv;
-  varying vec2 vLocalUv;
-  void main() {
-    vec2 sampleUv = vUv;
-    if (uGoldfish > .5) {
-      // Re-sample the detailed source as an 88x60 sprite. This is an exact 2:1
-      // reduction of the atlas cell, so every logical texel stays a crisp,
-      // evenly-spaced colour block when the fish grows or turns.
-      vec2 pixelUv = (floor(vLocalUv * vec2(88.0, 60.0)) + .5) / vec2(88.0, 60.0);
-      sampleUv = uOffset + pixelUv * uRepeat;
-    }
-    vec4 c = texture2D(uMap, sampleUv);
-
-    if (uGoldfish > .5) {
-      vec2 px = floor(vLocalUv * vec2(88.0, 60.0)) + .5;
-      vec3 orangeDark = vec3(.48, .16, .025);
-
-      // The atlas has one pose, so the face is animated as a few deliberate
-      // palette swaps on that same low-resolution grid.
-      if (uBlink > .01) {
-        vec2 eye = (px - vec2(63.5, 26.5)) / vec2(7.7, 7.7);
-        float eyeShape = dot(eye, eye);
-        float openHalf = mix(1.0, .04, uBlink);
-        if (eyeShape < 1.0 && abs(eye.y) > openHalf) {
-          // Upper and lower lids move toward one another. A small vertical
-          // palette shift keeps the closed eye part of the shaded face instead
-          // of looking like a flat orange patch pasted over it.
-          float shade = clamp((eye.y + 1.0) * .5, 0.0, 1.0);
-          vec3 lid = mix(vec3(1.0, .55, .08), vec3(.88, .25, .025), shade);
-          c = vec4(lid, 1.0);
-        }
-        if (uBlink > .9 && eyeShape < 1.0 && abs(eye.y) < .13) {
-          float curve = abs(eye.x) * .11;
-          if (abs(eye.y + curve) < .105) c = vec4(orangeDark, 1.0);
-        }
-      }
-
-    }
-    if (c.a < 0.06) discard;
-    c.rgb *= uTint;
-    // Water haze, held off until the fish is genuinely deep in the tank.
-    float far = smoothstep(.5, 1.0, uFar);
-    float grey = dot(c.rgb, vec3(.299, .587, .114));
-    c.rgb = mix(c.rgb, vec3(grey), far * .18);
-    c.rgb = mix(c.rgb, uWater, far * .32);
-    c.rgb *= mix(1.02, .84, far);
-    c.rgb = mix(c.rgb, c.rgb * vec3(.72, .88, .6), uDirt * .55);
-    // A small pixel-clustered light/shadow pass sells the fake volume while the
-    // fish is presenting its side during a turn.
-    float turnAmount = clamp(abs(uTurn), 0.0, 1.0);
-    float side = abs(vLocalUv.x * 2.0 - 1.0);
-    float bevel = smoothstep(.18, .92, side) * turnAmount;
-    c.rgb *= 1.0 - bevel * .3;
-    c.rgb += vec3(.1, .065, .025) * (1.0 - side) * turnAmount;
-    // A bite flashes the whole body white for a beat — the feedback that tells you
-    // which fish just earned you something.
-    c.rgb = mix(c.rgb, vec3(1.0), uFlash * .7);
-    gl_FragColor = c;
-  }
-`;
-
-/**
- * The procedural environment behind the water.
- *
- * It speaks the painted backdrop's language deliberately: flat colour, no outlines,
- * a two-stop water gradient, a pool of light on the sand and silhouette shapes
- * standing on the horizon in a single ink tone. Everything that differs between the
- * eight tanks is a uniform, so the whole chain is one shader and one data table.
- *
- * HORIZON matches the water shader's SAND_LINE, which is what keeps the caustics
- * landing on the same floor this layer draws.
- */
-const SCENERY_FRAGMENT = `
-  uniform float uTime;
-  uniform vec3 uWaterTop, uWaterBottom, uFloor, uInk, uGlow;
-  uniform vec4 uRidge;    // height, frequency, jaggedness, edge bias
-  uniform vec4 uFeature;  // arch, stars, planet, vents
-  varying vec2 vUv;
-
-  const float HORIZON = 0.356;
-  // The quad is 28.2 × 15.9, so one unit of u covers 1.77× the world a unit of v
-  // does. Anything meant to be round has to be measured in this corrected space.
-  const float AR = 1.77;
-
-  float hash(vec2 p){ return fract(sin(dot(p, vec2(41.0, 289.0))) * 43758.5453); }
-
-  void main() {
-    float x = vUv.x, y = vUv.y;
-
-    // ── Open water above, lit sand below ────────────────────────────────────
-    // One soft light pool straddling the horizon lifts both the water and the sand,
-    // which is the painted backdrop's actual structure — not a gradient per band.
-    // Grading them separately leaves a dark seam along the sand line.
-    float pool = 1.0 - smoothstep(0.06, 0.78, length(vec2((x - 0.5) * 1.12, (y - 0.24))));
-    float up = clamp((y - HORIZON) / (1.0 - HORIZON), 0.0, 1.0);
-
-    vec3 water = mix(uWaterBottom, uWaterTop, pow(up, 0.6));
-    water = mix(water, water * 1.22 + uGlow * 0.1, pool * 0.45);
-
-    vec3 sand = mix(uFloor * 0.6, uFloor, pool);
-    sand += uGlow * pool * pool * 0.32;
-    // Broad soft mottling instead of a hash grid, which reads as square blocks.
-    sand *= 1.0 + sin(x * 21.0 + sin(y * 15.0) * 1.6) * sin(y * 17.0) * 0.025;
-
-    vec3 col = mix(sand, water, smoothstep(HORIZON - 0.02, HORIZON + 0.02, y));
-
-    // ── Stars, only in the open water. Drawn before the planet so its disc
-    //    occludes them rather than being speckled through.
-    if (uFeature.y > 0.0) {
-      vec2 g = vec2(x * AR * 55.0, y * 55.0);
-      vec2 id = floor(g);
-      float s = hash(id);
-      if (s > 0.968) {
-        vec2 c = id + 0.5 + (vec2(hash(id + 1.3), hash(id + 3.7)) - 0.5) * 0.7;
-        float twinkle = 0.45 + 0.55 * sin(uTime * 1.3 + s * 60.0);
-        col += vec3(smoothstep(0.34, 0.0, length(g - c))) * twinkle * uFeature.y
-             * smoothstep(HORIZON, HORIZON + 0.12, y);
-      }
-    }
-
-    // ── Planet limb ──────────────────────────────────────────────────────────
-    if (uFeature.z > 0.0) {
-      vec2 pc = vec2(0.82, 1.02);
-      float d = length((vec2(x, y) - pc) * vec2(AR, 1.0));
-      // Lit from the left, so the limb curves away into shadow on the right.
-      float lit = smoothstep(0.46, 0.04, d + (x - pc.x) * AR * 0.5);
-      vec3 planet = mix(uGlow * 0.22, uGlow * 1.15, lit);
-      col = mix(col, planet, smoothstep(0.46, 0.44, d) * uFeature.z);
-    }
-
-    // ── Tunnel mouth: solid ink outside a big rounded opening ────────────────
-    if (uFeature.x > 0.0) {
-      float r = length(vec2((x - 0.5) * 1.02, (y - HORIZON) * 0.66));
-      col = mix(col, uInk, smoothstep(0.46, 0.485, r) * uFeature.x);
-    }
-
-    // ── The horizon ridge ────────────────────────────────────────────────────
-    // One shape function covers the whole chain: a triangle wave shaped either into
-    // domes (coral) or spikes (kelp, rock, pipework) by the jaggedness term, with a
-    // per-cell height so the line never looks stamped.
-    // Two rows, the far one drawn first: a single row of shapes on a flat horizon
-    // reads as a comb, and the second row behind it is what turns the line into a
-    // place. Jaggedness both sharpens and *narrows* the shape — a wide triangle
-    // reads as a mountain, a narrow one as a plant.
-    float bias = mix(1.0, pow(clamp(abs(x - 0.5) * 2.0, 0.0, 1.0), 3.0), uRidge.w);
-    for (int pass = 0; pass < 2; pass++) {
-      float back = 1.0 - float(pass);
-      float freq = uRidge.y * mix(1.0, 0.63, back);
-      float u = x * freq + back * 0.37;
-      float t = abs(fract(u) * 2.0 - 1.0);
-      float dome = sqrt(max(0.0, 1.0 - t * t));
-      float blade = pow(max(0.0, 1.0 - t), mix(1.0, 4.5, uRidge.z));
-      float shape = mix(dome, blade, uRidge.z);
-      float rnd = hash(vec2(floor(u), 7.0 + back * 13.0));
-      float h = HORIZON + uRidge.x * bias * mix(1.0, 0.6, back) * (0.45 + 0.55 * rnd) * shape;
-      // Bounded below by the horizon as well as above by the shape: filling the slab
-      // from the sand upwards turns separate plants into one dark band.
-      float m = smoothstep(h, h - 0.006, y) * smoothstep(HORIZON - 0.03, HORIZON + 0.01, y);
-      col = mix(col, mix(uInk, water, 0.12 + back * 0.3), m);
-    }
-
-    // ── Lamps and vents sitting on the horizon ───────────────────────────────
-    if (uFeature.w > 0.0) {
-      float c = floor(x * 13.0);
-      float r1 = hash(vec2(c, 21.0));
-      vec2 p = vec2((c + 0.5 + (r1 - 0.5) * 0.5) / 13.0, HORIZON + 0.015 + r1 * 0.03);
-      float d = length((vec2(x, y) - p) * vec2(AR, 1.0));
-      float pulse = 0.5 + 0.5 * sin(uTime * 1.5 + r1 * 30.0);
-      col += uGlow * smoothstep(0.05, 0.0, d) * step(0.5, r1) * pulse * uFeature.w;
-    }
-
-    // Corner falloff, the same vignette the painted backdrop has.
-    col *= 1.0 - smoothstep(0.45, 1.0, length(vec2((x - 0.5) * 1.15, (y - 0.5) * 0.95))) * 0.35;
-    gl_FragColor = vec4(col, 1.0);
-  }
-`;
-
-const propVertex = `
-  attribute vec3 aColor;
-  attribute float aAlpha;
-  attribute vec2 aCell;
-  uniform vec2 uCellSize;
-  varying vec2 vUv;
-  varying vec3 vColor;
-  varying float vAlpha;
-  void main() {
-    vUv = aCell + uv * uCellSize;
-    vColor = aColor;
-    vAlpha = aAlpha;
-    gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
-  }
-`;
-
-const propFragment = `
-  uniform sampler2D uMap;
-  uniform float uBrightness;
-  varying vec2 vUv;
-  varying vec3 vColor;
-  varying float vAlpha;
-  void main() {
-    vec4 c = texture2D(uMap, vUv);
-    if (c.a < 0.04) discard;
-    gl_FragColor = vec4(c.rgb * vColor * uBrightness, c.a * vAlpha);
-  }
-`;
-
-const plantVertex = `
-  uniform float uTime;
-  uniform float uPhase;
-  uniform float uSpeed;
-  uniform float uSway;
-  varying vec2 vUv;
-  void main() {
-    vUv = uv;
-    vec3 p = position;
-    float tip = uv.y * uv.y;
-    float current = sin(uTime * uSpeed + uPhase + uv.y * 1.35);
-    float counter = sin(uTime * uSpeed * .57 + uPhase * 1.7) * .3;
-    p.x += (current + counter) * tip * uSway;
-    p.y += sin(uTime * uSpeed * .72 + uPhase) * tip * .018;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
-  }
-`;
-
-const plantFragment = `
-  uniform sampler2D uMap;
-  uniform vec2 uOffset;
-  uniform vec2 uRepeat;
-  uniform vec3 uTint;
-  uniform vec3 uWater;
-  uniform float uHue;
-  uniform float uDirt;
-  varying vec2 vUv;
-
-  vec3 rotateHue(vec3 color, float angle) {
-    float c = cos(angle);
-    float s = sin(angle);
-    mat3 hue = mat3(
-      0.213 + c * 0.787 - s * 0.213, 0.213 - c * 0.213 + s * 0.143, 0.213 - c * 0.213 - s * 0.787,
-      0.715 - c * 0.715 - s * 0.715, 0.715 + c * 0.285 + s * 0.140, 0.715 - c * 0.715 + s * 0.715,
-      0.072 - c * 0.072 + s * 0.928, 0.072 - c * 0.072 - s * 0.283, 0.072 + c * 0.928 + s * 0.072
-    );
-    return hue * color;
-  }
-
-  void main() {
-    vec4 c = texture2D(uMap, uOffset + vUv * uRepeat);
-    if (c.a < .08) discard;
-    // The generated sprites already carry deep teal shadows. Lift the whole layer
-    // so those shaded pixels stay readable after compositing through the water.
-    vec3 plantColor = rotateHue(c.rgb * uTint, uHue);
-    float luminance = dot(plantColor, vec3(.299, .587, .114));
-    plantColor = mix(plantColor, vec3(luminance), .3);
-    plantColor = mix(plantColor, uWater, .26);
-    c.rgb = min(plantColor * 1.08 + vec3(.018, .035, .014), vec3(1.0));
-    c.rgb = mix(c.rgb, c.rgb * vec3(.68, .82, .55), uDirt * .45);
-    gl_FragColor = c;
-  }
-`;
-
-function atlasSprite(
-  base: THREE.Texture,
-  r: { x: number; y: number; w: number; h: number },
-  atlas: { w: number; h: number },
-  width: number,
-  z: number,
-) {
-  const texture = base.clone();
-  const clones = (base.userData.atlasClones ??= []) as THREE.Texture[];
-  clones.push(texture);
-  texture.repeat.set(r.w / atlas.w, r.h / atlas.h);
-  texture.offset.set(r.x / atlas.w, 1 - (r.y + r.h) / atlas.h);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.magFilter = THREE.LinearFilter;
-  texture.minFilter = THREE.LinearFilter;
-  texture.generateMipmaps = false;
-  const material = new THREE.ShaderMaterial({
-    uniforms: {
-      uMap: { value: texture },
-      uTime: { value: 0 },
-      uWater: { value: new THREE.Color(0.16, 0.6, 0.78) },
-      uDirt: { value: 0 },
-      uNear: { value: THREE.MathUtils.smoothstep(z, -2.4, 1.2) },
-      uOffset: { value: new THREE.Vector2(r.x / atlas.w, 1 - (r.y + r.h) / atlas.h) },
-      uRepeat: { value: new THREE.Vector2(r.w / atlas.w, r.h / atlas.h) },
-    },
-    transparent: true,
-    depthWrite: false,
-    vertexShader: `
-      uniform vec2 uOffset; uniform vec2 uRepeat;
-      varying vec2 vUv; varying vec2 vWorld;
-      void main(){
-        vUv=uOffset+uv*uRepeat;
-        vec4 world=modelMatrix*vec4(position,1.);
-        vWorld=world.xy;
-        gl_Position=projectionMatrix*viewMatrix*world;
-      }`,
-    fragmentShader: `
-      uniform sampler2D uMap; uniform float uTime; uniform float uNear;
-      uniform vec3 uWater; uniform float uDirt;
-      varying vec2 vUv; varying vec2 vWorld;
-      float caustic(vec2 p,float t){
-        // Lock the projected light to chunky world-space texels. The caustic then
-        // crawls across a sprite as pixel clusters instead of a smooth gradient.
-        p=(floor(p*10.)+.5)/10.;
-        float a=sin(p.x*2.1+t*1.18+sin(p.y*1.7-t*.72));
-        float b=sin(p.y*2.45-t*.96+sin(p.x*1.45+t*.51));
-        float light=pow(1.-clamp(abs(a+b)*.5,0.,1.),5.2);
-        return floor(light*4.+.5)/4.;
-      }
-      void main(){
-        vec4 c=texture2D(uMap,vUv);
-        if(c.a<.035) discard;
-        // Atmospheric perspective: distance eats contrast and pulls colour toward
-        // the tank blue, so the layers read as depth rather than stacked cut-outs.
-        float far = 1.0 - uNear;
-        float sunk = 1.0 - smoothstep(-3.6, 1.6, vWorld.y);
-        float grey = dot(c.rgb, vec3(.299, .587, .114));
-        c.rgb = mix(c.rgb, vec3(grey), far * .12);
-        c.rgb = mix(c.rgb, uWater, far * .26 + sunk * far * .06);
-        c.rgb *= mix(.91, 1.03, uNear) * (1.0 - sunk * .05);
-        vec2 p=vWorld*vec2(2.35,2.05);
-        vec2 split=vec2(.075,.025);
-        float lightR=(caustic(p+split,uTime)*.72
-                     +caustic(vWorld.yx*vec2(2.7,2.2)+.37+split,-uTime*.71)*.38);
-        float lightG=(caustic(p,uTime)*.72
-                     +caustic(vWorld.yx*vec2(2.7,2.2)+.37,-uTime*.71)*.38);
-        float lightB=(caustic(p-split,uTime)*.72
-                     +caustic(vWorld.yx*vec2(2.7,2.2)+.37-split,-uTime*.71)*.38);
-        vec3 light=vec3(lightR,lightG,lightB)*mix(.55,1.0,uNear);
-        c.rgb=c.rgb*(.97+light*.17)+uWater*light*.3;
-        c.rgb = mix(c.rgb, c.rgb*vec3(.74,.9,.62), uDirt*.5);
-        gl_FragColor=c;
-      }`,
-  });
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(width, width * (r.h / r.w)), material);
-  mesh.position.z = z;
-  return mesh;
-}
+// arrays every frame and never writes to them. Shaders live in ./shaders, the
+// instanced entity pools in ./pools, and the static layout tables in ./constants.
 
 type FishVisual = {
   mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
@@ -443,14 +23,6 @@ type PlantVisual = {
   x: number;
   lift: number;
   size: number;
-};
-
-type Pool = {
-  mesh: THREE.InstancedMesh;
-  color: THREE.InstancedBufferAttribute;
-  alpha: THREE.InstancedBufferAttribute;
-  cell: THREE.InstancedBufferAttribute;
-  capacity: number;
 };
 
 export class TankScene {
@@ -491,18 +63,14 @@ export class TankScene {
   private propRows = 2;
   private fishRegions = new Map<SpeciesId, { x: number; y: number; w: number; h: number }>();
   private atlasSize = { w: 1, h: 1 };
+  private propIndex: (key: PropKey) => number = () => 0;
 
+  private pools!: EntityPools;
   private fishVisuals = new Map<number, FishVisual>();
   private plantVisuals: PlantVisual[] = [];
-  private pellets!: Pool;
-  private pickups!: Pool;
-  private coins!: Pool;
-  private particles!: Pool;
-  private bubbles!: Pool;
   private shocks: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>[] = [];
   private shadowPool: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>[] = [];
 
-  private dummy = new THREE.Object3D();
   private decorMeshes = new Map<DecorId, THREE.Mesh>();
   private currentDecor = new Set<DecorId>();
   private currentTank = -1;
@@ -579,8 +147,6 @@ export class TankScene {
     this.propIndex = props.index;
   }
 
-  private propIndex: (key: PropKey) => number = () => 0;
-
   private buildBackdrop() {
     let pending = 1;
     const done = () => { if (--pending <= 0) this.ready = true; };
@@ -634,26 +200,34 @@ export class TankScene {
         // each other, so the cells drift and pinch like light through a rippled
         // surface. Sampled in floor space, one unit of q is one cell.
         float caustic(vec2 q, float t, float blur) {
+          // Slow domain warp: the sample point drifts through a second wave field
+          // before the web is evaluated, so cell sizes and line spacing vary and
+          // the pattern reads as rippling light rather than a stamped grid.
+          q += vec2(sin(q.y * .47 + t * .31) + sin(q.y * 1.31 - t * .17) * .35,
+                    cos(q.x * .53 - t * .27) + sin(q.x * 1.13 + t * .21) * .35) * .8;
           float w1 = sin(q.x + t * 1.05 + sin(q.y * .8 + t * .9) * 1.15);
           float w2 = sin(q.y * 1.05 - t * .85 - sin(q.x * .9 - t * .7) * 1.15);
           float web = 1.0 - min(abs(w1), abs(w2));
-          return pow(clamp(web, 0.0, 1.0), mix(6.5, 2.4, blur)) * mix(1.0, .6, blur);
+          // Slow brightness drift: a low-frequency field lets some cells burn
+          // brighter than others, so the web reads as uneven focused light.
+          float glow = 1.0 + .32 * sin(q.x * .23 + t * .21) * sin(q.y * .19 - t * .17);
+          return pow(clamp(web, 0.0, 1.0), mix(6.5, 2.4, blur)) * mix(1.0, .6, blur) * glow;
         }
         float posterize(float value) {
-          return floor(clamp(value, 0.0, 1.0) * 4.0 + .5) / 4.0;
+          return floor(clamp(value, 0.0, 1.0) * 8.0 + .5) / 8.0;
         }
         void main(){
           vec3 lightColor = mix(uTint * vec3(1.1, 1.6, 1.5), vec3(1.0, .72, .35), uHeat * .7);
           // A fixed low-resolution sampling grid keeps every caustic edge crisp
           // and stable regardless of the canvas resolution.
-          const vec2 PIXEL_GRID = vec2(224.0, 126.0);
+          const vec2 PIXEL_GRID = vec2(448.0, 252.0);
           vec2 pixelUv = (floor(vUv * PIXEL_GRID) + .5) / PIXEL_GRID;
           // Project each pixel onto the painted sand plane before sampling, so the
           // cells foreshorten with the floor instead of tiling flat up the screen.
           const float SAND_LINE = .356;
           float run = clamp(pixelUv.y / SAND_LINE, 0.0, 1.14);
           float depth = 1.0 / mix(1.0 / 10.0, 1.0 / 20.0, run);
-          vec2 ground = vec2((pixelUv.x - .5) * depth * 1.44, depth) * 1.75;
+          vec2 ground = vec2((pixelUv.x - .5) * depth * 1.44, depth) * 3.4;
           ground.y -= uTime * .3;
           float blur = smoothstep(.5, 1.1, run) * .6;
           float reach = (1.0 - .45 * smoothstep(.65, 1.05, run)) * (1.0 - smoothstep(1.0, 1.13, run));
@@ -663,7 +237,7 @@ export class TankScene {
           // Sampling the caustic itself (rather than tinting one mask) creates the
           // little cyan/red fringes of chromatic aberration around bright cells.
           vec2 split = vec2(2.0, .75) / PIXEL_GRID;
-          vec2 groundDx = vec2(split.x * depth * 1.44, split.y * depth) * 1.75;
+          vec2 groundDx = vec2(split.x * depth * 1.44, split.y * depth) * 3.4;
           vec3 caustics;
           caustics.r = caustic(ground + groundDx, uTime, blur) * .9
                      + caustic((ground + groundDx) * vec2(.62, .74) + 11.3, -uTime * .73, blur) * .55;
@@ -671,15 +245,7 @@ export class TankScene {
                      + caustic(ground * vec2(.62, .74) + 11.3, -uTime * .73, blur) * .55;
           caustics.b = caustic(ground - groundDx, uTime, blur) * .9
                      + caustic((ground - groundDx) * vec2(.62, .74) + 11.3, -uTime * .73, blur) * .55;
-          caustics = vec3(posterize(caustics.r), posterize(caustics.g), posterize(caustics.b)) * reach * pool * .62;
-
-          vec2 wallUv = vec2(pixelUv.x * 12.0, (pixelUv.y - SAND_LINE) * 22.0) + 3.1;
-          vec2 wallSplit = split * vec2(12.0, 22.0);
-          vec3 wall = vec3(caustic(wallUv + wallSplit, uTime * .8, .55),
-                           caustic(wallUv, uTime * .8, .55),
-                           caustic(wallUv - wallSplit, uTime * .8, .55));
-          caustics += vec3(posterize(wall.r), posterize(wall.g), posterize(wall.b))
-                    * smoothstep(.34, .44, pixelUv.y) * (1.0 - smoothstep(.48, .76, pixelUv.y)) * pool * .2;
+          caustics = vec3(posterize(caustics.r), posterize(caustics.g), posterize(caustics.b)) * reach * pool * .63;
 
           float surfaceMask = smoothstep(.86, .985, pixelUv.y);
           float wave = sin(pixelUv.x * 47.0 + uTime * 2.3) + sin(pixelUv.x * 81.0 - uTime * 1.65) * .55;
@@ -855,70 +421,15 @@ export class TankScene {
     }
   }
 
-  private makePool(
-    texture: THREE.Texture,
-    capacity: number,
-    additive: boolean,
-    size: number,
-    cols = this.propCols,
-    rows = this.propRows,
-    brightness = 1,
-  ): Pool {
-    const geometry = new THREE.InstancedBufferGeometry();
-    const plane = new THREE.PlaneGeometry(size, size);
-    geometry.index = plane.index;
-    geometry.attributes.position = plane.attributes.position;
-    geometry.attributes.uv = plane.attributes.uv;
-    geometry.attributes.normal = plane.attributes.normal;
-
-    const color = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 3).fill(1), 3);
-    const alpha = new THREE.InstancedBufferAttribute(new Float32Array(capacity).fill(1), 1);
-    const cell = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 2), 2);
-    color.setUsage(THREE.DynamicDrawUsage);
-    alpha.setUsage(THREE.DynamicDrawUsage);
-    cell.setUsage(THREE.DynamicDrawUsage);
-
-    const material = new THREE.ShaderMaterial({
-      uniforms: {
-        uMap: { value: texture },
-        uCellSize: { value: new THREE.Vector2(1 / cols, 1 / rows) },
-        uBrightness: { value: brightness },
-      },
-      vertexShader: propVertex,
-      fragmentShader: propFragment,
-      transparent: true,
-      depthWrite: false,
-      blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
-    });
-
-    const mesh = new THREE.InstancedMesh(geometry, material, capacity);
-    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    mesh.frustumCulled = false;
-    mesh.count = 0;
-    geometry.setAttribute("aColor", color);
-    geometry.setAttribute("aAlpha", alpha);
-    geometry.setAttribute("aCell", cell);
-    // The plane is deliberately not disposed: its attribute buffers are now owned by
-    // the instanced geometry above, and disposing would evict them from the cache.
-    return { mesh, color, alpha, cell, capacity };
-  }
-
   private buildPools() {
-    this.pellets = this.makePool(this.propTexture, 512, false, 1);
-    this.pickups = this.makePool(this.propTexture, 256, false, 1);
-    this.coins = this.makePool(this.coinTexture, 256, false, 1, 7, 1, 1.65);
-    this.particles = this.makePool(this.propTexture, 900, true, 1);
-    this.bubbles = this.makePool(this.propTexture, 220, true, 1);
-    this.stage.add(this.pellets.mesh, this.pickups.mesh, this.coins.mesh, this.bubbles.mesh, this.particles.mesh);
-    // No renderOrder on the three "in the water" pools. An instanced mesh sorts as a
-    // single object at its own position, so parking each pool at a representative
-    // depth lets the fish weave in front of and behind the food and the coins —
-    // forcing a renderOrder instead pastes all of it over every fish in the tank.
-    this.pellets.mesh.position.z = 0.6;
-    this.pickups.mesh.position.z = 0.85;
-    this.coins.mesh.position.z = 0.85;
-    this.bubbles.mesh.position.z = 1.5;
-    this.particles.mesh.renderOrder = 20;
+    this.pools = new EntityPools({
+      propTexture: this.propTexture,
+      coinTexture: this.coinTexture,
+      propCols: this.propCols,
+      propRows: this.propRows,
+      propIndex: this.propIndex,
+    });
+    this.pools.build(this.stage);
 
     const ringGeometry = new THREE.RingGeometry(0.85, 1, 36);
     for (let i = 0; i < 10; i++) {
@@ -1131,10 +642,7 @@ export class TankScene {
       sprite.material.uniforms.uDirt.value = game.state.dirt;
     }
     this.syncFish(dt);
-    this.syncPellets();
-    this.syncPickups();
-    this.syncParticles();
-    this.syncBubbles();
+    this.pools.syncAll(world, this.elapsed, this.scale, game.derived.autoCollect);
     this.syncShocks();
 
     // Camera shake rides the combo: move the viewpoint so the whole tank rattles
@@ -1264,126 +772,6 @@ export class TankScene {
     for (let i = shadowIndex; i < this.shadowPool.length; i++) this.shadowPool[i].visible = false;
   }
 
-  private cellFor(key: PropKey): [number, number] {
-    const index = this.propIndex(key);
-    const col = index % this.propCols;
-    const row = Math.floor(index / this.propCols);
-    return [col / this.propCols, 1 - (row + 1) / this.propRows];
-  }
-
-  private syncPellets() {
-    const pool = this.pellets;
-    const [cu, cv] = this.cellFor("pellet");
-    let n = 0;
-    for (const p of this.world.pellets) {
-      if (n >= pool.capacity) break;
-      const food = FOOD_COLORS[p.food] ?? [1, 1, 1];
-      this.dummy.position.set(p.x, p.y, p.z);
-      this.dummy.rotation.z = p.id * 0.7 + p.age * 1.4;
-      const pulse = p.settled > 0 ? 0.82 : 1 + Math.sin(this.elapsed * 9 + p.id) * 0.06;
-      this.dummy.scale.setScalar(0.1 * pulse);
-      this.dummy.updateMatrix();
-      pool.mesh.setMatrixAt(n, this.dummy.matrix);
-      pool.color.setXYZ(n, food[0], food[1], food[2]);
-      pool.alpha.setX(n, p.settled > 0 ? 0.6 : 1);
-      pool.cell.setXY(n, cu, cv);
-      n++;
-    }
-    this.commit(pool, n);
-  }
-
-  private syncPickups() {
-    const pool = this.pickups;
-    let n = 0;
-    let coinN = 0;
-    for (const p of this.world.pickups) {
-      if (p.collected) continue;
-      const fadeIn = Math.min(1, p.age * 8);
-      const nearExpiry = Math.max(0, 1 - Math.max(0, p.age - (this.game.derived.autoCollect - 0.6)) * 2);
-
-      if (p.kind === "coin") {
-        if (coinN >= this.coins.capacity) continue;
-        // Horizontal foreshortening is authored directly into all seven frames;
-        // runtime scaling and rotation stay neutral so the pixel art is never
-        // distorted by a second, conflicting spin animation.
-        const frame = Math.floor(p.spin * 2.2) % 7;
-        this.dummy.position.set(p.x, p.y, p.z);
-        this.dummy.rotation.z = 0;
-        const pop = Math.min(1, p.age * 6);
-        this.dummy.scale.setScalar(0.2 * pop);
-        this.dummy.updateMatrix();
-        this.coins.mesh.setMatrixAt(coinN, this.dummy.matrix);
-        this.coins.color.setXYZ(coinN, 1, 1, 1);
-        this.coins.alpha.setX(coinN, fadeIn * (0.5 + nearExpiry * 0.5));
-        this.coins.cell.setXY(coinN, frame / 7, 0);
-        coinN++;
-        continue;
-      }
-
-      if (n >= pool.capacity) continue;
-      const [cu, cv] = this.cellFor(p.kind);
-      this.dummy.position.set(p.x, p.y, p.z);
-      this.dummy.rotation.z = Math.sin(p.spin) * 0.25;
-      // Coins spin about their vertical axis by squashing in X — the cheap trick
-      // that reads unmistakably as a spinning coin.
-      const spin = Math.abs(Math.cos(p.spin));
-      const pop = Math.min(1, p.age * 6);
-      const size = (p.kind === "chest" ? 0.44 : 0.32) * pop;
-      this.dummy.scale.set(size * (0.25 + spin * 0.75), size, 1);
-      this.dummy.updateMatrix();
-      pool.mesh.setMatrixAt(n, this.dummy.matrix);
-      pool.color.setXYZ(n, 1, 1, 1);
-      pool.alpha.setX(n, fadeIn * (0.5 + nearExpiry * 0.5));
-      pool.cell.setXY(n, cu, cv);
-      n++;
-    }
-    this.commit(pool, n);
-    this.commit(this.coins, coinN);
-  }
-
-  private syncParticles() {
-    const pool = this.particles;
-    let n = 0;
-    for (const p of this.world.particles) {
-      if (n >= pool.capacity) break;
-      const [cu, cv] = this.cellFor(p.kind === "spark" ? "spark" : "dot");
-      const t = Math.max(0, p.life / p.maxLife);
-      this.dummy.position.set(p.x, p.y, p.z);
-      this.dummy.rotation.z = p.spin;
-      this.dummy.scale.setScalar(p.size * (0.4 + t * 1.4));
-      this.dummy.updateMatrix();
-      pool.mesh.setMatrixAt(n, this.dummy.matrix);
-      pool.color.setXYZ(n, p.color[0], p.color[1], p.color[2]);
-      pool.alpha.setX(n, t);
-      pool.cell.setXY(n, cu, cv);
-      n++;
-    }
-    this.commit(pool, n);
-  }
-
-  private syncBubbles() {
-    const pool = this.bubbles;
-    const [cu, cv] = this.cellFor("dot");
-    // The first tanks zoom the stage in to fill the glass. Keep that zoom from
-    // enlarging air bubbles as aggressively as fish and scenery.
-    const zoomCompensation = Math.min(1, 1 / this.scale);
-    let n = 0;
-    for (const b of this.world.bubbles) {
-      if (n >= pool.capacity) break;
-      this.dummy.position.set(b.x + Math.sin(this.elapsed * 1.5 + b.drift) * 0.06, b.y, b.z);
-      this.dummy.rotation.z = 0;
-      this.dummy.scale.setScalar(b.scale * (b.carry > 0 ? 0.34 : 0.16) * zoomCompensation);
-      this.dummy.updateMatrix();
-      pool.mesh.setMatrixAt(n, this.dummy.matrix);
-      if (b.carry > 0) pool.color.setXYZ(n, 1, 0.85, 0.3);
-      else pool.color.setXYZ(n, 0.7, 1, 0.98);
-      pool.alpha.setX(n, b.carry > 0 ? 0.9 : 0.34);
-      pool.cell.setXY(n, cu, cv);
-      n++;
-    }
-    this.commit(pool, n);
-  }
-
   private syncShocks() {
     this.world.shocks.forEach((shock, i) => {
       if (i >= this.shocks.length) return;
@@ -1394,14 +782,6 @@ export class TankScene {
       mesh.material.opacity = Math.max(0, shock.life) * 0.8;
     });
     for (let i = this.world.shocks.length; i < this.shocks.length; i++) this.shocks[i].visible = false;
-  }
-
-  private commit(pool: Pool, count: number) {
-    pool.mesh.count = count;
-    pool.mesh.instanceMatrix.needsUpdate = true;
-    pool.color.needsUpdate = true;
-    pool.alpha.needsUpdate = true;
-    pool.cell.needsUpdate = true;
   }
 
   // ── Coordinates ────────────────────────────────────────────────────────────
@@ -1438,14 +818,3 @@ export class TankScene {
     }
   }
 }
-
-const FOOD_COLORS: Record<string, [number, number, number]> = {
-  flake: [0.79, 0.54, 0.27],
-  shrimpPellet: [1, 0.48, 0.36],
-  worm: [0.88, 0.42, 0.63],
-  starFood: [1, 0.85, 0.24],
-  explosive: [1, 0.34, 0.13],
-  rainbow: [0.56, 0.94, 1],
-  mutant: [0.62, 1, 0.24],
-  krill: [1, 0.84, 0],
-};
