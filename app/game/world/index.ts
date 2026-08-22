@@ -1,153 +1,28 @@
-import { FOODS, SPECIES, STAGES, stageFor } from "./content";
-import { Game, fishValue } from "./game";
-import type { PropKey } from "./sprites";
-import type { Ability, FishSave, FoodId, SpeciesId } from "./types";
+import { FOODS, SPECIES, STAGES, stageFor } from "../content";
+import { Game } from "../game";
+import { fishValue } from "../economy";
+import type { PropKey } from "../sprites";
+import type { Ability, FishSave, FoodId, SpeciesId } from "../types";
+import { runAbilities } from "./abilities";
+import { comboMultiplier, comboTierProgress, FRENZY_AT, FRENZY_COOLDOWN } from "./combo";
+import { nextEntityId, rand, type Bounds, type Bubble, type FishEntity, type Particle, type Pellet, type Pickup, type Popup, type Shock } from "./entities";
 
 // The live tank. Everything here is mutable, pooled and frame-rate independent;
 // nothing here touches React or Three.js. The renderer reads these arrays, the HUD
 // reads `game.live`, and the two never argue about who owns the truth.
+// Entity shapes live in ./entities, the combo/frenzy rules in ./combo and the
+// species abilities in ./abilities.
 
-let nextId = 1;
 const FISH_TURN_COOLDOWN = 3;
 /** Currency pickups rest on the same horizontal plane as the fish shadows. */
 const PICKUP_SHADOW_LEVEL = 0.42;
-
-export type FishEntity = {
-  id: number;
-  species: SpeciesId;
-  xp: number;
-  bonus: number;
-  variant: boolean;
-  x: number; y: number; z: number;
-  vx: number; vy: number;
-  heading: number;
-  speed: number;
-  facing: number;
-  nextTurnAt: number;
-  beat: number;
-  thrust: number;
-  burstAt: number;
-  phase: number;
-  depth: number;
-  targetDepth: number;
-  targetX: number; targetY: number;
-  thinkAt: number;
-  searchAt: number;
-  chewUntil: number;
-  restUntil: number;
-  pellet: Pellet | null;
-  pickup: Pickup | null;
-  prey: FishEntity | null;
-  /** Puffer only: 0..1 toward bursting, plus the coins banked in the swelling. */
-  inflate: number;
-  banked: number;
-  nextAbility: number;
-  boostUntil: number;
-  boostMul: number;
-  rageUntil: number;
-  passiveAccum: number;
-  size: number;
-  stage: number;
-  flash: number;
-  /** Set the frame a fish is eaten so the renderer can play the vanish. */
-  dying: number;
-};
-
-export type Pellet = {
-  id: number;
-  food: FoodId;
-  x: number; y: number; z: number;
-  vx: number; vy: number;
-  age: number;
-  settled: number;
-  /** Which fish has dibs, and until when — a lapsed claim frees the pellet again. */
-  claim: number;
-  claimUntil: number;
-  splitAt: number;
-  gone: boolean;
-};
-
-export type Pickup = {
-  id: number;
-  kind: PropKey;
-  value: number;
-  x: number; y: number; z: number;
-  vx: number; vy: number;
-  age: number;
-  spin: number;
-  claim: number;
-  collected: boolean;
-};
-
-export type Particle = {
-  x: number; y: number; z: number;
-  vx: number; vy: number;
-  life: number; maxLife: number;
-  size: number;
-  color: [number, number, number];
-  kind: "spark" | "dot";
-  spin: number;
-};
-
-export type Bubble = {
-  x: number; y: number; z: number;
-  speed: number;
-  drift: number;
-  scale: number;
-  /** Coins riding this bubble, paid out when it reaches the surface. */
-  carry: number;
-};
-
-export type Popup = {
-  x: number; y: number;
-  text: string;
-  life: number;
-  color: string;
-  big: boolean;
-};
-
-export type Shock = { x: number; y: number; r: number; life: number };
-
-export type Bounds = { halfWidth: number; top: number; bottom: number };
-
-/**
- * Active play is a bonus, not the economy. At ×16 the combo alone outweighed a full
- * tier of species and every other decision in the game rounded to noise next to
- * "click faster"; the genre keeps the active-vs-automatic gap in the low single digits.
- */
-const COMBO_TIERS = [
-  { at: 0, mul: 1 },
-  { at: 5, mul: 1.4 },
-  { at: 14, mul: 1.8 },
-  { at: 30, mul: 2.4 },
-  { at: 55, mul: 3.2 },
-];
-const FRENZY_AT = 90;
-/**
- * Without this the combo bar refills during the frenzy itself and the tank simply
- * never leaves it — which turns the game's biggest moment into its baseline.
- */
-const FRENZY_COOLDOWN = 25;
 const CURSOR_MAGNET_SPEED = 7;
 const EXPLOSION_PELLETS = 3;
-const DIG_REWARD_BITES = 10;
 
-export function comboMultiplier(combo: number): number {
-  let mul = 1;
-  for (const tier of COMBO_TIERS) if (combo >= tier.at) mul = tier.mul;
-  return mul;
-}
-
-export function comboTierProgress(combo: number): { mul: number; next: number; progress: number } {
-  let index = 0;
-  for (let i = 0; i < COMBO_TIERS.length; i++) if (combo >= COMBO_TIERS[i].at) index = i;
-  const mul = COMBO_TIERS[index].mul;
-  const from = COMBO_TIERS[index].at;
-  const to = index + 1 < COMBO_TIERS.length ? COMBO_TIERS[index + 1].at : FRENZY_AT;
-  return { mul, next: to, progress: Math.min(1, (combo - from) / Math.max(1, to - from)) };
-}
-
-function rand(a: number, b: number) { return a + Math.random() * (b - a); }
+export type {
+  Bounds, Bubble, FishEntity, Particle, Pellet, Pickup, Popup, Shock,
+} from "./entities";
+export { comboMultiplier, comboTierProgress, FRENZY_AT } from "./combo";
 
 export class World {
   game: Game;
@@ -232,7 +107,7 @@ export class World {
     const depth = def.floorDweller ? rand(0.02, 0.25) : rand(0.1, 0.95);
     const phase = rand(0, 6.28);
     const fish: FishEntity = {
-      id: nextId++,
+      id: nextEntityId(),
       species,
       xp,
       bonus: save?.bonus ?? 1,
@@ -329,7 +204,7 @@ export class World {
 
   spawnPellet(x: number, y: number, food: FoodId): Pellet {
     const pellet: Pellet = {
-      id: nextId++,
+      id: nextEntityId(),
       food,
       x: Math.max(-this.bounds.halfWidth, Math.min(this.bounds.halfWidth, x)),
       y: Math.min(y, this.bounds.top + 0.4),
@@ -562,7 +437,7 @@ export class World {
       const sense = def.senseRadius * d.senseMul * (1 + this.intensity * 0.3);
 
       this.retarget(f, def, sense, dt);
-      this.runAbilities(f, def, dt);
+      runAbilities(this, f, def, dt);
 
       // ── Steering: heading only, so a fish can never sidestep or reverse ──
       let steerX = 0, steerY = 0;
@@ -899,105 +774,6 @@ export class World {
     this.syncFish();
   }
 
-  private runAbilities(f: FishEntity, def: (typeof SPECIES)[SpeciesId], dt: number) {
-    for (const ability of def.abilities) {
-      switch (ability.kind) {
-        case "cleaner":
-          this.game.state.dirt = Math.max(0, this.game.state.dirt - ability.rate * dt);
-          break;
-        case "lure": {
-          // Pull loose food toward the lantern; this is what makes the anglerfish
-          // visibly change the flow of the tank rather than just earning more.
-          for (const p of this.pellets) {
-            if (p.settled > 0) continue;
-            const dx = f.x - p.x, dy = f.y - p.y;
-            const distance = Math.hypot(dx, dy);
-            if (distance > ability.radius || distance < 0.05) continue;
-            const pull = (1 - distance / ability.radius) * ability.force * dt;
-            p.vx += (dx / distance) * pull;
-            p.vy += (dy / distance) * pull;
-          }
-          break;
-        }
-        case "passive": {
-          f.passiveAccum += ability.perSecond * this.game.derived.valueMul
-            * (this.game.derived.speciesMul[f.species] ?? 1)
-            * (this.game.derived.schoolMul[f.species] ?? 1) * f.bonus * dt
-            * (this.frenzyActive ? 3 : 1);
-          const threshold = ability.perSecond * this.game.derived.valueMul * 1.6;
-          if (f.passiveAccum > threshold) {
-            this.spawnPickup(f.x, f.y - 0.2, f.passiveAccum, "coin");
-            f.passiveAccum = 0;
-          }
-          break;
-        }
-        default:
-          break;
-      }
-    }
-
-    if (this.elapsed < f.nextAbility) return;
-
-    for (const ability of def.abilities) {
-      switch (ability.kind) {
-        case "shock": {
-          f.nextAbility = this.elapsed + ability.interval;
-          const mass = this.game.derived.flags.has("massFrenzy");
-          const radius = mass ? 99 : ability.radius;
-          let hit = 0;
-          for (const other of this.fish) {
-            if (other === f || other.dying > 0) continue;
-            if (Math.hypot(other.x - f.x, other.y - f.y) > radius) continue;
-            other.boostUntil = this.elapsed + ability.duration;
-            other.boostMul = Math.max(other.boostMul, ability.mul);
-            other.thrust = 1.4;
-            hit++;
-          }
-          this.shocks.push({ x: f.x, y: f.y, r: 0.3, life: 0.5 });
-          this.burst(f.x, f.y, 20, [0.8, 1, 0.4], 0.18);
-          if (mass && hit > 0) this.combo += 6;
-          break;
-        }
-        case "dig": {
-          f.nextAbility = this.elapsed + ability.interval * rand(0.8, 1.2);
-          const digs = this.game.derived.flags.has("doubleDig") ? 2 : 1;
-          for (let i = 0; i < digs; i++) {
-            if (Math.random() > ability.luck * 0.85) continue;
-            this.game.state.stats.digs++;
-            const value = fishValue(this.game, f.species, f.xp, f.bonus) * DIG_REWARD_BITES * this.liveMultiplier;
-            const kind: PropKey = Math.random() < 0.28 ? "chest" : Math.random() < 0.5 ? "pearl" : "gem";
-            const pickup = this.spawnPickup(f.x + rand(-0.4, 0.4), this.bounds.bottom - 0.2, value * (kind === "chest" ? 3 : 1), kind);
-            pickup.vy = 1.4;
-            this.burst(pickup.x, pickup.y, 12, [0.85, 0.7, 0.4], 0.12);
-          }
-          break;
-        }
-        case "predator": {
-          f.nextAbility = this.elapsed + ability.interval;
-          if (!this.game.state.sharkDiet) break;
-          const candidates = this.fish.filter((other) =>
-            other !== f && other.dying === 0 && SPECIES[other.species].prey && other.size < f.size * 0.6);
-          if (!candidates.length) break;
-          f.prey = candidates[Math.floor(Math.random() * candidates.length)];
-          break;
-        }
-        case "bubbler": {
-          f.nextAbility = this.elapsed + 1 / ability.rate;
-          const value = ability.value * this.game.derived.valueMul * f.bonus * this.liveMultiplier;
-          this.bubbles.push({
-            x: f.x, y: f.y, z: 2.1,
-            speed: rand(0.7, 1.2), drift: rand(0, 6.28), scale: 1.3,
-            carry: value,
-          });
-          break;
-        }
-        default:
-          break;
-      }
-    }
-    if (this.elapsed >= f.nextAbility) f.nextAbility = this.elapsed + 3;
-  }
-
   // ── Pickups ────────────────────────────────────────────────────────────────
   spawnPickup(x: number, y: number, value: number, kind: PropKey): Pickup {
     // Coins still pop up out of a fish, but now fan out through a wide upward arc
@@ -1005,7 +781,7 @@ export class World {
     const launchAngle = Math.PI / 2 + rand(-0.95, 0.95);
     const launchSpeed = rand(1.2, 2.25);
     const pickup: Pickup = {
-      id: nextId++,
+      id: nextEntityId(),
       kind,
       value,
       x, y,

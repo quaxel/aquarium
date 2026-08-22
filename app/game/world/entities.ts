@@ -6,6 +6,11 @@ import type { PropKey } from "../sprites";
 
 export let nextId = 1;
 
+/** Monotonic entity id, shared by every pool. */
+export function nextEntityId(): number {
+  return nextId++;
+}
+
 export type FishEntity = {
   id: number;
   species: SpeciesId;

@@ -1,4 +1,4 @@
-import { SPECIES_ORDER, SPECIES } from "../content/species";
+import { SPECIES } from "../content/species";
 import type { FishArt, SpeciesId } from "../types";
 import { Pix, alpha, hex, mix, type RGBA } from "./raster";
 
